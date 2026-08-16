@@ -1,0 +1,109 @@
+groups:
+  - name: gateway_alerts
+    rules:
+
+      - alert: GatewayHighErrorRate
+        expr: |
+          rate(gateway_requests_total[1m]) > 0
+          and rate(gateway_requests_5xx_total[1m])
+            / rate(gateway_requests_total[1m]) > 0.01
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Gateway error rate > 1%"
+          description: "5xx rate is {{ $value | humanizePercentage }} over the last minute."
+
+      # Real P99 from histogram — requires gateway_latency_us_bucket to be scraped
+      - alert: GatewayHighP99Latency
+        expr: |
+          histogram_quantile(0.99,
+            rate(gateway_latency_us_bucket[1m])
+          ) > 1000
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Gateway P99 latency > 1ms"
+          description: "P99 latency is {{ $value }}µs — exceeds 1ms SLA."
+
+      - alert: GatewayHighP50Latency
+        expr: |
+          histogram_quantile(0.50,
+            rate(gateway_latency_us_bucket[1m])
+          ) > 500
+        for: 60s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Gateway P50 latency > 500µs"
+          description: "Median latency is {{ $value }}µs."
+
+      - alert: GatewayCircuitOpen
+        expr: gateway_circuit_breaker_state == 1
+        for: 10s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Gateway global circuit breaker is OPEN"
+          description: "All upstream traffic is being rejected. Immediate action required."
+
+      - alert: GatewayBackpressureHigh
+        expr: |
+          gateway_max_concurrency > 0
+          and gateway_in_flight / gateway_max_concurrency > 0.9
+        for: 15s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Gateway in-flight requests > 90% of limit"
+          description: "In-flight: {{ $value }} requests."
+
+      - alert: GatewayHighWafBlocks
+        expr: rate(gateway_waf_blocks_total[1m]) > 100
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "WAF blocking > 100 req/s — possible attack"
+          description: "WAF block rate: {{ $value }}/s."
+
+      - alert: GatewayHighRateLimitRate
+        expr: rate(gateway_requests_429_total[1m]) > 1000
+        for: 30s
+        labels:
+          severity: info
+        annotations:
+          summary: "High rate-limit rejection rate"
+          description: "429 rate: {{ $value }}/s — clients may need quota increase."
+
+      - alert: GatewayConfigNotReady
+        expr: gateway_config_ready == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Gateway config not loaded"
+          description: "gateway_config_ready is 0 — sidecar may be failing or config invalid."
+
+      # Use Prometheus's synthetic `up` metric, NOT `gateway_up`. When the
+      # process is down the gateway can't serve /metrics, so `gateway_up` goes
+      # ABSENT (never 0) and `gateway_up == 0` would never fire. `up{job=...}` is
+      # set to 0 by Prometheus itself on a failed scrape.
+      - alert: GatewayDown
+        expr: up{job="gateway"} == 0
+        for: 5s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Gateway process is down"
+          description: "Prometheus cannot scrape the gateway target — process may have crashed."
+
+      - alert: ControlPlaneDown
+        expr: up{job="control-plane"} == 0
+        for: 5s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Control plane is down"
+          description: "Prometheus cannot scrape the control-plane target."

@@ -1,0 +1,8 @@
+{{- if .Values.createNamespace }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "uam.namespace" . }}
+  labels:
+    {{- include "uam.labels" . | nindent 4 }}
+{{- end }}

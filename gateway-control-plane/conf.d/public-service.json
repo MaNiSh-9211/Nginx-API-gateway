@@ -1,0 +1,16 @@
+{
+  "name": "public-service",
+  "rate_limit_max": 1000,
+  "require_auth": false,
+  "regional_upstreams": {
+    "EU": [
+      { "name": "pub-eu-1", "address": "pub-eu-1:8080", "weight": 10 }
+    ],
+    "US": [
+      { "name": "pub-us-1", "address": "pub-us-1:8080", "weight": 10 }
+    ],
+    "AP": [
+      { "name": "pub-ap-1", "address": "pub-ap-1:8080", "weight": 10 }
+    ]
+  }
+}

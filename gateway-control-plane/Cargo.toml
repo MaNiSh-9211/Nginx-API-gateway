@@ -1,0 +1,28 @@
+[package]
+name        = "control-plane"
+version     = "0.4.0"
+edition     = "2021"
+description = "Ultra-scale API Gateway — Control Plane (GitOps config + telemetry)"
+
+[profile.release]
+opt-level     = 3
+lto           = "thin"
+codegen-units = 1
+panic         = "abort"
+strip         = true
+
+[dependencies]
+actix-web   = "4.13.0"
+serde       = { version = "1.0.228", features = ["derive"] }
+serde_json  = "1.0.149"
+env_logger  = "0.10.2"
+log         = "0.4.29"
+num_cpus    = "1.17.0"
+arc-swap    = "1.6.0"
+# HMAC-SHA256 for admin API request signing
+hmac        = "0.12.1"
+sha2        = "0.10.8"
+# Hex encoding for HMAC digest
+hex         = "0.4.3"
+# Redis — token revocation publisher (ADR-0038, ADR-0039)
+redis       = { version = "0.24", features = ["tls-native-tls"] }

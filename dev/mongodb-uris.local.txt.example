@@ -1,0 +1,5 @@
+# Copy to mongodb-uris.local.txt (gitignored). One candidate per line.
+# Optional label prefix: label|mongodb+srv://user:pass@host/uam?...
+#
+# cluster9211|mongodb+srv://USER:PASSWORD@cluster9211.be3bfds.mongodb.net/uam?retryWrites=true&w=majority&appName=uam-backend
+# other-user|mongodb+srv://USER2:PASSWORD2@other-cluster.mongodb.net/uam?retryWrites=true&w=majority

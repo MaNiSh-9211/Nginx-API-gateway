@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: uam-backend-env
+  namespace: {{ include "uam.namespace" . }}
+  labels:
+    {{- include "uam.labels" . | nindent 4 }}
+data:
+  PORT: "8080"
+  NODE_ENV: production
+  MONGODB_URI: {{ include "uam.mongodbUri" . | quote }}
+  REDIS_ENABLED: "true"
+  REDIS_HOST: {{ .Values.redis.host | quote }}
+  REDIS_PORT: {{ .Values.redis.port | quote }}
+  JWT_ISSUER: {{ .Values.auth.issuer | quote }}
+  JWT_AUDIENCE: {{ .Values.auth.audience | quote }}
+  DEFAULT_HOME_REGION: {{ .Values.auth.defaultHomeRegion | quote }}
+  CLIENT_URL: {{ .Values.clientUrl | quote }}
+  CONTROL_PLANE_URL: {{ .Values.gateway.controlPlaneUrl | quote }}
+  AUTO_VERIFY_EMAIL: {{ ternary "true" "false" .Values.auth.autoVerifyEmail | quote }}
+  AUTH_OMIT_REFRESH_IN_BODY: {{ ternary "true" "false" .Values.auth.omitRefreshInBody | quote }}
+  COOKIE_SECURE: {{ ternary "true" "false" .Values.auth.cookieSecure | quote }}
+  COOKIE_SAME_SITE: strict
+  MONGODB_MAX_POOL_SIZE: {{ .Values.mongodbPool.maxPoolSize | quote }}
+  MONGODB_MIN_POOL_SIZE: {{ .Values.mongodbPool.minPoolSize | quote }}
+  MONGODB_MAX_IDLE_TIME_MS: {{ .Values.mongodbPool.maxIdleTimeMs | quote }}
+  MONGODB_WAIT_QUEUE_TIMEOUT_MS: {{ .Values.mongodbPool.waitQueueTimeoutMs | quote }}
+  REDIS_CONNECT_TIMEOUT_MS: {{ .Values.redisPool.connectTimeoutMs | quote }}
+  REDIS_COMMAND_TIMEOUT_MS: {{ .Values.redisPool.commandTimeoutMs | quote }}
+  REDIS_KEEPALIVE_MS: {{ .Values.redisPool.keepAliveMs | quote }}
+  UAM_REQUIRE_DISTRIBUTED_RATE_LIMIT: "1"
+  {{- if .Values.auth.refuseInsecureSecrets }}
+  UAM_REFUSE_INSECURE_SECRETS: "1"
+  {{- end }}
+  {{- if .Values.oauth.google.clientId }}
+  GOOGLE_CLIENT_ID: {{ .Values.oauth.google.clientId | quote }}
+  GOOGLE_CALLBACK_URL: {{ .Values.oauth.google.callbackUrl | quote }}
+  {{- end }}
+  {{- if .Values.oauth.github.clientId }}
+  GITHUB_CLIENT_ID: {{ .Values.oauth.github.clientId | quote }}
+  GITHUB_CALLBACK_URL: {{ .Values.oauth.github.callbackUrl | quote }}
+  {{- end }}
+  {{- if .Values.smtp.host }}
+  SMTP_HOST: {{ .Values.smtp.host | quote }}
+  SMTP_PORT: {{ .Values.smtp.port | quote }}
+  SMTP_USER: {{ .Values.smtp.user | quote }}
+  {{- end }}

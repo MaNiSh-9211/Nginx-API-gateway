@@ -1,0 +1,111 @@
+# UAM Helm chart — deploy separately from api-gateway (ADR-0056).
+# JWT_ACCESS_SECRET must match api-gateway secrets.jwtSecret (ADR-0050).
+
+namespace: uam
+createNamespace: true
+
+images:
+  backend:
+    repository: uam-backend
+    tag: latest
+    pullPolicy: IfNotPresent
+  frontend:
+    repository: uam-frontend
+    tag: latest
+    pullPolicy: IfNotPresent
+
+backend:
+  replicas: 2
+  service:
+    port: 8080
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+frontend:
+  replicas: 2
+  service:
+    type: LoadBalancer
+    port: 80
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 128Mi
+  # In-cluster gateway URL for nginx proxy_pass (/api/* → gateway)
+  gatewayProxyUrl: http://gateway.api-gateway.svc.cluster.local:8080
+
+mongodb:
+  enabled: true
+  image: mongo:7
+  storage: 10Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+redis:
+  host: redis.api-gateway.svc.cluster.local
+  port: "6379"
+  password: ""
+
+gateway:
+  controlPlaneUrl: http://control-plane.api-gateway.svc.cluster.local:8081
+
+auth:
+  issuer: api-gateway-auth-server
+  audience: api-gateway-clients
+  defaultHomeRegion: US
+  autoVerifyEmail: false
+  omitRefreshInBody: true
+  cookieSecure: true
+  refuseInsecureSecrets: true
+
+# Per-pod MongoDB driver pool (total conns ≈ replicas × maxPoolSize).
+mongodbPool:
+  maxPoolSize: 50
+  minPoolSize: 5
+  maxIdleTimeMs: 60000
+  waitQueueTimeoutMs: 10000
+
+# Per-pod Redis clients (cache + dedicated rate-limit connection).
+redisPool:
+  connectTimeoutMs: 10000
+  commandTimeoutMs: 5000
+  keepAliveMs: 30000
+
+clientUrl: https://auth.example.com
+
+secrets:
+  create: true
+  jwtAccessSecret: "CHANGE_ME_must_match_gateway_JWT_SECRET"
+  jwtRefreshSecret: "CHANGE_ME_long_random_refresh_secret"
+  passwordPepper: "CHANGE_ME_long_random_pepper"
+  adminApiKey: "CHANGE_ME_must_match_gateway_admin_key"
+  mongoRootUser: uam
+  mongoRootPassword: "CHANGE_ME_mongo_root_password"
+  googleClientSecret: ""
+  githubClientSecret: ""
+
+oauth:
+  google:
+    clientId: ""
+    callbackUrl: ""
+  github:
+    clientId: ""
+    callbackUrl: ""
+
+smtp:
+  host: ""
+  port: "587"
+  user: ""
+  password: ""

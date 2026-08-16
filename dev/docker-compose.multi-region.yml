@@ -1,0 +1,246 @@
+# ============================================================
+# Multi-Region Gateway — Local simulation of EU / US / AP PoPs
+# Usage: docker-compose -f docker-compose.multi-region.yml up -d --build
+#
+# Each PoP is pinned to one region (GATEWAY_REGION). A request whose JWT
+# home_region does not match that PoP's region is rejected with 403 — this is
+# the data-residency guarantee, exercised end to end.
+# See: docs/decisions/0014-data-residency-identity-routing.md
+# ============================================================
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "50m"
+    max-file: "5"
+
+x-gateway: &gateway-base
+  build:
+    context: ../gateway-edge
+    dockerfile: Dockerfile
+  image: api-gateway:latest
+  depends_on:
+    redis:
+      condition: service_healthy
+    control-plane:
+      condition: service_healthy
+    config-sidecar:
+      condition: service_healthy
+  env_file:
+    - path: .env
+    - path: .env.dev
+      required: false
+    - path: ../gateway-edge/.env
+    - path: ../gateway-edge/.env.dev
+      required: false
+  ulimits:
+    nofile:
+      soft: 1048576
+      hard: 1048576
+  volumes:
+    - gateway-config:/etc/gateway
+  restart: unless-stopped
+  networks:
+    - internal
+    - public
+  logging: *default-logging
+
+services:
+
+  # ── EU Gateway PoP ────────────────────────────────────────
+  gateway-eu:
+    <<: *gateway-base
+    ports:
+      - "18083:8080"
+      - "18443:8443"
+    environment:
+      - REDIS_HOST=redis
+      - CONTROL_PLANE_URL=http://control-plane:8081
+      - GATEWAY_CONFIG_PATH=/etc/gateway/config.json
+      - GATEWAY_REGION=EU
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  # ── US Gateway PoP ────────────────────────────────────────
+  gateway-us:
+    <<: *gateway-base
+    ports:
+      - "18084:8080"
+      - "18444:8443"
+    environment:
+      - REDIS_HOST=redis
+      - CONTROL_PLANE_URL=http://control-plane:8081
+      - GATEWAY_CONFIG_PATH=/etc/gateway/config.json
+      - GATEWAY_REGION=US
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  # ── AP Gateway PoP ────────────────────────────────────────
+  gateway-ap:
+    <<: *gateway-base
+    ports:
+      - "18086:8080"
+      - "18446:8443"
+    environment:
+      - REDIS_HOST=redis
+      - CONTROL_PLANE_URL=http://control-plane:8081
+      - GATEWAY_CONFIG_PATH=/etc/gateway/config.json
+      - GATEWAY_REGION=AP
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  # ── Config Sidecar (shared by all local PoPs) ──────────────
+  config-sidecar:
+    build:
+      context: ../gateway-sidecar
+      dockerfile: Dockerfile
+    image: config-sidecar:latest
+    networks:
+      - internal
+    depends_on:
+      control-plane:
+        condition: service_healthy
+    environment:
+      - CONTROL_PLANE_URL=http://control-plane:8081
+      - GATEWAY_CONFIG_PATH=/etc/gateway/config.json
+      - CONFIG_POLL_SECS=5
+      - METRICS_PORT=9092
+    volumes:
+      - gateway-config:/etc/gateway
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /etc/gateway/config.json"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+    restart: unless-stopped
+    logging: *default-logging
+
+  # ── Mock upstream backends (all regions) ───────────────────
+  echo-backend:
+    image: ealen/echo-server:0.9.2
+    environment:
+      - PORT=8080
+    networks:
+      internal:
+        aliases:
+          - api-eu-1
+          - api-eu-2
+          - api-us-1
+          - api-us-2
+          - api-ap-1
+          - pub-eu-1
+          - pub-us-1
+          - pub-ap-1
+          - eu-backend-1
+          - eu-backend-2
+          - us-backend-1
+          - us-backend-2
+          - ap-backend-1
+    restart: unless-stopped
+    logging: *default-logging
+
+  # ── Control Plane ─────────────────────────────────────────
+  control-plane:
+    build:
+      context: ../gateway-control-plane
+      dockerfile: Dockerfile
+    image: control-plane:latest
+    ports:
+      - "18085:8081"
+    networks:
+      - internal
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file:
+      - path: .env
+      - path: .env.dev
+        required: false
+      - path: ../gateway-control-plane/.env
+      - path: ../gateway-control-plane/.env.dev
+        required: false
+    environment:
+      - REDIS_HOST=redis
+      - CONFIG_DIR=/app/conf.d
+    volumes:
+      - ../gateway-control-plane/conf.d:/app/conf.d:ro
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8081/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    logging: *default-logging
+
+  # ── Redis ─────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    command: redis-server /usr/local/etc/redis/redis.conf
+    networks:
+      - internal
+    volumes:
+      - ../gateway-redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    logging: *default-logging
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.66.0
+    networks:
+      - internal
+    environment:
+      - REDIS_ADDR=redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging
+
+  # ── Prometheus ────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    ports:
+      - "9090:9090"
+    networks:
+      - internal
+    volumes:
+      - ../platform/monitoring/prometheus/prometheus.multi-region.yml:/etc/prometheus/prometheus.yml:ro
+      - ../platform/monitoring/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+      - "--web.enable-lifecycle"
+    restart: unless-stopped
+    logging: *default-logging
+
+networks:
+  internal:
+    driver: bridge
+  public:
+    driver: bridge
+
+volumes:
+  redis-data:
+  prometheus-data:
+  gateway-config:

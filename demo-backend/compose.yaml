@@ -1,0 +1,28 @@
+# ==============================================================================
+# demo-backend/compose.yaml — standalone smoke-test only
+# ==============================================================================
+# For full stack use dev/docker-compose.yml instead.
+#
+# Usage:
+#   cp demo-backend/.env.example demo-backend/.env
+#   Fill in your values in demo-backend/.env
+#   docker compose up --build
+#
+# All credentials come from demo-backend/.env (gitignored).
+# NO secrets are hardcoded in this file.
+# ==============================================================================
+
+services:
+  demo-backend:
+    build: .
+    ports:
+      - "${PORT:-8080}:8080"
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped

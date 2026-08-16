@@ -1,0 +1,34 @@
+groups:
+  - name: uam_alerts
+    rules:
+
+      - alert: UamBackendDown
+        expr: up{job="uam-backend"} == 0
+        for: 15s
+        labels:
+          severity: critical
+        annotations:
+          summary: "UAM backend is down"
+          description: "Prometheus cannot scrape uam-backend /metrics — auth API unavailable."
+
+      - alert: UamHigh5xxRate
+        expr: |
+          sum(rate(uam_http_requests_total{status=~"5.."}[5m])) > 0
+          and sum(rate(uam_http_requests_total[5m])) > 0
+          and sum(rate(uam_http_requests_total{status=~"5.."}[5m]))
+            / sum(rate(uam_http_requests_total[5m])) > 0.05
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "UAM backend 5xx rate > 5%"
+          description: "Auth API error ratio is elevated."
+
+      - alert: UamFrontendNginxDown
+        expr: up{job="uam-frontend-nginx"} == 0
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "UAM frontend nginx exporter is down"
+          description: "Cannot scrape nginx metrics for uam-frontend."

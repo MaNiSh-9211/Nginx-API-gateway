@@ -1,0 +1,68 @@
+# ============================================================
+# OpenTelemetry Collector — Ultra-Scale API Gateway
+# ============================================================
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+    send_batch_max_size: 2048
+
+  # Drop high-cardinality attributes to reduce storage cost
+  attributes:
+    actions:
+      - key: http.user_agent
+        action: delete
+      - key: net.peer.ip
+        action: delete
+
+  # Tail-based sampling: keep 1% of successful traces, 100% of errors
+  tail_sampling:
+    decision_wait: 10s
+    num_traces: 100000
+    expected_new_traces_per_sec: 10000
+    policies:
+      - name: errors-policy
+        type: status_code
+        status_code: { status_codes: [ERROR] }
+      - name: slow-traces-policy
+        type: latency
+        latency: { threshold_ms: 100 }
+      - name: probabilistic-policy
+        type: probabilistic
+        probabilistic: { sampling_percentage: 1 }
+
+exporters:
+  # Jaeger (traces)
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+  # Prometheus (metrics)
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    namespace: gateway
+
+  # Logging (debug only — disable in production)
+  logging:
+    loglevel: warn
+
+service:
+  pipelines:
+    traces:
+      receivers:  [otlp]
+      processors: [batch, attributes, tail_sampling]
+      exporters:  [otlp/jaeger]
+    metrics:
+      receivers:  [otlp]
+      processors: [batch]
+      exporters:  [prometheus]

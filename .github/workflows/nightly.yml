@@ -1,0 +1,37 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+jobs:
+  nightly-e2e:
+    name: Docker Compose E2E (scheduled)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start stack
+        working-directory: dev
+        run: docker compose -f docker-compose.yml up -d --build --wait
+      - name: E2E smoke
+        run: chmod +x dev/tests/e2e.sh && dev/tests/e2e.sh
+
+  nightly-rust:
+    name: Rust unit tests (scheduled)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        crate:
+          - gateway-edge/rust-ext
+          - gateway-control-plane
+          - gateway-sidecar
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.crate }}
+      - name: cargo test (${{ matrix.crate }})
+        working-directory: ${{ matrix.crate }}
+        run: cargo test --release

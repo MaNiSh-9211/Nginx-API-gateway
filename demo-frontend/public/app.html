@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Redirecting to UAM…</title>
+  <script src="runtime-config.js"></script>
+  <script src="uam-link.js"></script>
+  <script>window.location.replace(uamUrl('/dashboard'));</script>
+</head>
+<body>
+  <p>Opening <a id="uam-dash">UAM dashboard</a>…</p>
+  <script>document.getElementById('uam-dash').href = uamUrl('/dashboard');</script>
+</body>
+</html>

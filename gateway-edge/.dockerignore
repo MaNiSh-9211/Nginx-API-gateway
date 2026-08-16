@@ -1,0 +1,5 @@
+rust-ext/target/
+rust-ext/.git/
+*.log
+.env
+.env.*

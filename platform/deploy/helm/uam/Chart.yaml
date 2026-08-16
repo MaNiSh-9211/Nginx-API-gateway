@@ -1,0 +1,12 @@
+apiVersion: v2
+name: uam
+description: Helm chart for UAM (User Access Management) — backend, frontend, MongoDB
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - uam
+  - auth
+  - identity
+maintainers:
+  - name: platform-team

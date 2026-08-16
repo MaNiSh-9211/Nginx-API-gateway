@@ -1,0 +1,53 @@
+worker_processes 1;
+
+events { worker_connections 1024; }
+
+http {
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+    sendfile      on;
+    server_tokens off;
+
+    # Docker embedded DNS + public resolvers (Render HTTPS upstreams).
+    resolver 127.0.0.11 1.1.1.1 8.8.8.8 valid=10s ipv6=off;
+
+    server {
+        listen 80;
+        server_name _;
+
+        root /usr/share/nginx/html;
+
+        include /etc/nginx/cloudflare/cdn-static.conf;
+
+        location / {
+            try_files $uri $uri.html $uri/ =404;
+        }
+
+        # GATEWAY_PROXY_URL / GATEWAY_PROXY_HOST — set at runtime (Render dashboard).
+        # Defaults in docker-entrypoint.sh: http://gateway:8080 + gateway (Compose).
+
+        # UAM auth through gateway (same-origin cookies)
+        location /api/ {
+            add_header Cache-Control "no-store, private" always;
+            add_header CDN-Cache-Control "no-store" always;
+            proxy_pass ${GATEWAY_PROXY_URL}$request_uri;
+            proxy_ssl_server_name on;
+            proxy_set_header Host ${GATEWAY_PROXY_HOST};
+            proxy_set_header X-Forwarded-Host $host;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_http_version 1.1;
+        }
+
+        # Protected business APIs via gateway (/gw/health → gateway /health)
+        location ~ ^/gw/(?<gwpath>.*)$ {
+            proxy_pass ${GATEWAY_PROXY_URL}/$gwpath$is_args$args;
+            proxy_ssl_server_name on;
+            proxy_set_header Host ${GATEWAY_PROXY_HOST};
+            proxy_set_header X-Forwarded-Host $host;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_http_version 1.1;
+        }
+    }
+}

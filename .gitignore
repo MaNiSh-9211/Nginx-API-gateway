@@ -1,0 +1,93 @@
+# ==============================================================================
+# .gitignore — root
+# ==============================================================================
+#
+# CREDENTIAL FILES — never commit
+# Pattern:
+#   .env          → gitignored (real credentials — create locally / on server)
+#   .env.example  → committed  (placeholder template — safe to share)
+# ==============================================================================
+
+# ── Credentials and secrets ───────────────────────────────────────────────────
+**/.env
+**/.env.dev
+**/.env.local
+**/.env.production
+**/.env.staging
+
+# .env.example files ARE committed — do not ignore them
+!**/.env.example
+
+# ── Sub-repo .git directories ─────────────────────────────────────────────────
+# Each sub-directory has its own .git repo for independent deployment.
+# Exclude their .git folders so this root repo does not treat them as submodules.
+demo-backend/.git/
+demo-frontend/.git/
+gateway-control-plane/.git/
+gateway-edge/.git/
+gateway-sidecar/.git/
+uam-backend/.git/
+uam-frontend/.git/
+
+# ── Rust build artifacts ──────────────────────────────────────────────────────
+target/
+**/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# ── Node / npm ────────────────────────────────────────────────────────────────
+node_modules/
+dist/
+dist-ssr/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnp
+.pnp.js
+
+# ── Logs and runtime debug artifacts ─────────────────────────────────────────
+*.log
+logs/
+curl_output.txt
+pid_check.txt
+
+# ── OS artifacts ─────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ── IDE / Editor ──────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── Dev runtime data ──────────────────────────────────────────────────────────
+demo-backend/data/users.json
+dev/mongodb-uris.local.txt
+
+# ── Kiro tooling (local spec/task management — not part of the project) ───────
+.kiro/
+
+# ── Certificates (never commit real certs) ───────────────────────────────────
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+!**/.env.example
+
+# ── Temporary files ───────────────────────────────────────────────────────────
+*.tmp
+*.temp
+.cache/
+
+# Sub-repo git dirs (renamed during root-repo operations)
+**/.git_bak/
+

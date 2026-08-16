@@ -1,0 +1,8 @@
+{{- if .Values.createNamespace }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "api-gateway.namespace" . }}
+  labels:
+    {{- include "api-gateway.labels" . | nindent 4 }}
+{{- end }}

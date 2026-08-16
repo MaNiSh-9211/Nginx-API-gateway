@@ -1,0 +1,28 @@
+# ==============================================================================
+# gateway-edge/compose.yaml — standalone smoke-test only
+# ==============================================================================
+# For full stack use dev/docker-compose.yml instead.
+#
+# Usage:
+#   cp gateway-edge/.env.example gateway-edge/.env
+#   Fill in your values in gateway-edge/.env
+#   docker compose up --build
+#
+# All credentials come from gateway-edge/.env (gitignored).
+# NO secrets are hardcoded in this file.
+# ==============================================================================
+
+services:
+  gateway-edge:
+    build: .
+    ports:
+      - "${GATEWAY_PORT:-8080}:8080"
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped

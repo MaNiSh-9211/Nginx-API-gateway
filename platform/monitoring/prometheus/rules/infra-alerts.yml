@@ -1,0 +1,39 @@
+groups:
+  - name: infra_alerts
+    rules:
+
+      - alert: ConfigSidecarDown
+        expr: up{job="config-sidecar"} == 0
+        for: 15s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Config sidecar is down"
+          description: "Prometheus cannot scrape config-sidecar — gateway config may stop updating."
+
+      - alert: ConfigSidecarPollErrors
+        expr: rate(config_sidecar_errors_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Config sidecar poll/write errors"
+          description: "Sidecar errors at {{ $value }}/s — check control-plane reachability."
+
+      - alert: RedisExporterDown
+        expr: up{job="redis"} == 0
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis exporter is down"
+          description: "Cannot scrape Redis metrics — revocation/rate-limit Redis may be unavailable."
+
+      - alert: MongoDBExporterDown
+        expr: up{job="mongodb"} == 0
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "MongoDB exporter is down"
+          description: "Cannot scrape MongoDB metrics for UAM."

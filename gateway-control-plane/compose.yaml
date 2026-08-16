@@ -1,0 +1,30 @@
+# ==============================================================================
+# gateway-control-plane/compose.yaml — standalone smoke-test only
+# ==============================================================================
+# For full stack use dev/docker-compose.yml instead.
+#
+# Usage:
+#   cp gateway-control-plane/.env.example gateway-control-plane/.env
+#   Fill in your values in gateway-control-plane/.env
+#   docker compose up --build
+#
+# All credentials come from gateway-control-plane/.env (gitignored).
+# NO secrets are hardcoded in this file.
+# ==============================================================================
+
+services:
+  gateway-control-plane:
+    build: .
+    ports:
+      - "${PORT:-8081}:8081"
+    env_file:
+      - .env
+    volumes:
+      - ./conf.d:/app/conf.d:ro
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8081/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped

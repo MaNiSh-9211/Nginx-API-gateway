@@ -1,0 +1,14 @@
+# Optional overlay: document Cloudflare production headers for local testing.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.cloudflare.yml up
+#
+# In production, Cloudflare sets X-Forwarded-Proto: https and CF-* headers.
+# Frontends use X-Forwarded-Proto for HSTS (uam-frontend nginx).
+
+services:
+  uam-frontend:
+    environment:
+      - CLOUDFLARE_SIMULATE=1
+
+  frontend-test-service:
+    environment:
+      - CLOUDFLARE_SIMULATE=1

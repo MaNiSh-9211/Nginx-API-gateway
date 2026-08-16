@@ -1,0 +1,58 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
+      "title": "Scrape target up",
+      "type": "timeseries",
+      "fieldConfig": { "defaults": { "min": 0, "max": 1 }, "overrides": [] },
+      "targets": [
+        { "expr": "up", "legendFormat": "{{job}}", "refId": "A" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 8 },
+      "id": 2,
+      "title": "Control plane services",
+      "type": "stat",
+      "targets": [
+        { "expr": "control_plane_config_services", "refId": "A" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 8 },
+      "id": 3,
+      "title": "Sidecar config updates",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "rate(config_sidecar_updates_total[5m])", "legendFormat": "updates/s", "refId": "A" },
+        { "expr": "rate(config_sidecar_errors_total[5m])", "legendFormat": "errors/s", "refId": "B" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 8 },
+      "id": 4,
+      "title": "Redis connected clients",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "redis_connected_clients", "legendFormat": "clients", "refId": "A" }
+      ]
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["platform", "overview"],
+  "time": { "from": "now-15m", "to": "now" },
+  "title": "Platform — Stack Overview",
+  "uid": "platform-stack-overview",
+  "version": 1
+}

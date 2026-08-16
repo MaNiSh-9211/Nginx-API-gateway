@@ -1,0 +1,152 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ include "api-gateway.namespace" . }}
+  labels:
+    app: gateway
+    {{- include "api-gateway.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.gateway.replicas }}
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+        {{- include "api-gateway.labels" . | nindent 8 }}
+      {{- if .Values.prometheus.scrape }}
+      annotations:
+        {{- toYaml .Values.prometheus.annotations | nindent 8 }}
+      {{- end }}
+    spec:
+      # Drain in-flight requests before SIGKILL (ADR-0031).
+      terminationGracePeriodSeconds: 45
+      # These pods never call the Kubernetes API — don't mount a token (ADR-0051).
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gateway
+          image: "{{ .Values.images.gateway.repository }}:{{ .Values.images.gateway.tag }}"
+          imagePullPolicy: {{ .Values.images.gateway.pullPolicy }}
+          # OpenResty master needs root + CAP_SETUID/SETGID to drop worker
+          # privileges and writes to /tmp,/var/run — so it keeps those. We still
+          # forbid privilege escalation via setuid binaries (ADR-0051).
+          securityContext:
+            allowPrivilegeEscalation: false
+          ports:
+            - name: http
+              containerPort: {{ .Values.gateway.service.targetHttpPort }}
+            - name: https
+              containerPort: {{ .Values.gateway.service.targetHttpsPort }}
+          envFrom:
+            - configMapRef:
+                name: gateway-env
+          env:
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-secrets
+                  key: JWT_SECRET
+            {{- if .Values.secrets.jwtKeys }}
+            - name: JWT_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-secrets
+                  key: JWT_KEYS
+                  optional: true
+            {{- end }}
+            {{- if .Values.redis.password }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-secrets
+                  key: REDIS_PASSWORD
+                  optional: true
+            {{- end }}
+          volumeMounts:
+            - name: gateway-config
+              mountPath: /etc/gateway
+            {{- if .Values.gateway.tls.enabled }}
+            - name: gateway-tls
+              mountPath: /etc/nginx/certs
+              readOnly: true
+            {{- end }}
+          resources:
+            {{- toYaml .Values.gateway.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 5
+            failureThreshold: 6
+
+        - name: config-sidecar
+          image: "{{ .Values.images.configSidecar.repository }}:{{ .Values.images.configSidecar.tag }}"
+          imagePullPolicy: {{ .Values.images.configSidecar.pullPolicy }}
+          # Rust binary that writes only to the shared /etc/gateway volume — can
+          # run fully locked down (ADR-0051).
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          envFrom:
+            - configMapRef:
+                name: gateway-env
+          env:
+            - name: CONFIG_READ_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-secrets
+                  key: CONFIG_READ_TOKEN
+          volumeMounts:
+            - name: gateway-config
+              mountPath: /etc/gateway
+          resources:
+            {{- toYaml .Values.configSidecar.resources | nindent 12 }}
+          livenessProbe:
+            exec:
+              command: ["test", "-s", "/etc/gateway/config.json"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+      volumes:
+        - name: gateway-config
+          emptyDir: {}
+        {{- if .Values.gateway.tls.enabled }}
+        - name: gateway-tls
+          secret:
+            secretName: {{ .Values.gateway.tls.secretName }}
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: {{ include "api-gateway.namespace" . }}
+  labels:
+    app: gateway
+    {{- include "api-gateway.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.gateway.service.type }}
+  selector:
+    app: gateway
+  ports:
+    - name: http
+      port: {{ .Values.gateway.service.httpPort }}
+      targetPort: http
+    - name: https
+      port: {{ .Values.gateway.service.httpsPort }}
+      targetPort: https

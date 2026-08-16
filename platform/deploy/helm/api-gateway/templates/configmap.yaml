@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-env
+  namespace: {{ include "api-gateway.namespace" . }}
+  labels:
+    {{- include "api-gateway.labels" . | nindent 4 }}
+data:
+  GATEWAY_REGION: {{ .Values.gateway.region | quote }}
+  GATEWAY_CONFIG_PATH: "/etc/gateway/config.json"
+  CONTROL_PLANE_URL: "http://control-plane:{{ .Values.controlPlane.service.port }}"
+  REDIS_HOST: {{ .Values.redis.host | quote }}
+  REDIS_PORT: {{ .Values.redis.port | quote }}
+  # REDIS_PASSWORD is intentionally NOT here — it is a secret and is injected
+  # from the gateway-secrets Secret via secretKeyRef (see gateway.yaml).
+  {{- if .Values.redis.username }}
+  REDIS_USERNAME: {{ .Values.redis.username | quote }}
+  {{- end }}
+  {{- if .Values.redis.tls }}
+  REDIS_TLS: "1"
+  {{- end }}
+  CONFIG_POLL_SECS: {{ .Values.configSidecar.pollSecs | quote }}
+  {{- if .Values.revocationFailClosed }}
+  REVOCATION_FAIL_CLOSED: "1"
+  {{- end }}
+  {{- if .Values.refuseInsecureSecrets }}
+  GATEWAY_REFUSE_INSECURE_SECRETS: "1"
+  {{- end }}
+  {{- if .Values.cloudflare.enabled }}
+  CLOUDFLARE_ENABLED: "1"
+  {{- end }}

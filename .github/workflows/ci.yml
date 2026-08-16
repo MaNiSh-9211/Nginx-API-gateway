@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  rust:
+    name: Rust unit tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        crate:
+          - gateway-edge/rust-ext
+          - gateway-control-plane
+          - gateway-sidecar
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.crate }}
+      - name: cargo test (${{ matrix.crate }})
+        working-directory: ${{ matrix.crate }}
+        run: cargo test --release
+
+  compose-validate:
+    name: Validate Docker Compose
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker compose config (single-node)
+        working-directory: dev
+        run: docker compose -f docker-compose.yml config --quiet
+      - name: docker compose config (multi-region)
+        working-directory: dev
+        run: docker compose -f docker-compose.multi-region.yml config --quiet
+      - name: docker compose config (testing overlay)
+        working-directory: dev
+        run: docker compose -f docker-compose.yml -f docker-compose.testing.yml config --quiet
+      - name: docker compose config (UAM stack)
+        working-directory: dev
+        run: docker compose -f docker-compose.yml -f docker-compose.testing.yml -f docker-compose.uam.yml config --quiet
+
+  helm-validate:
+    name: Helm template lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: helm template
+        run: |
+          helm template api-gateway platform/deploy/helm/api-gateway \
+            --set secrets.jwtSecret=testsecret \
+            --set secrets.adminApiKey=testadmin \
+            > /dev/null
+
+  e2e:
+    name: Docker Compose E2E
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start stack
+        working-directory: dev
+        run: docker compose -f docker-compose.yml up -d --build --wait
+      - name: E2E smoke (bash)
+        run: chmod +x dev/tests/e2e.sh && dev/tests/e2e.sh

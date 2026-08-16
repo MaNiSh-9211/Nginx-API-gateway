@@ -1,0 +1,28 @@
+# ==============================================================================
+# demo-frontend/compose.yaml — standalone smoke-test only
+# ==============================================================================
+# For full stack use dev/docker-compose.yml instead.
+#
+# Usage:
+#   cp demo-frontend/.env.example demo-frontend/.env
+#   Fill in your values in demo-frontend/.env
+#   docker compose up --build
+#
+# All config comes from demo-frontend/.env (gitignored).
+# NO secrets are hardcoded in this file.
+# ==============================================================================
+
+services:
+  demo-frontend:
+    build: .
+    ports:
+      - "${FRONTEND_TEST_PORT:-8090}:80"
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:80/"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
+    restart: unless-stopped

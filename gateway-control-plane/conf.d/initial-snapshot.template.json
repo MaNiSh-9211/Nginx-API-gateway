@@ -1,0 +1,65 @@
+{
+  "version": "v1.0.3",
+  "global_max_concurrency": 50000,
+  "expected_issuer": "api-gateway-auth-server",
+  "expected_audience": "api-gateway-clients",
+  "routes": [
+    { "path_prefix": "/api/auth/", "service_name": "uam-auth", "strip_prefix": false },
+    { "path_prefix": "/api/v1/", "service_name": "api-v1", "strip_prefix": false },
+    { "path_prefix": "/public/", "service_name": "public-service", "strip_prefix": false },
+    { "path_prefix": "/ratelimit-test/", "service_name": "ratelimit-test", "strip_prefix": false },
+    { "path_prefix": "/", "service_name": "default-service", "strip_prefix": false }
+  ],
+  "services": {
+    "uam-auth": {
+      "name": "uam-auth",
+      "rate_limit_max": 2000,
+      "require_auth": false,
+      "regional_upstreams": {
+        "EU": [{ "name": "uam-backend", "address": "__UAM_BACKEND_UPSTREAM__", "weight": 10 }],
+        "US": [{ "name": "uam-backend", "address": "__UAM_BACKEND_UPSTREAM__", "weight": 10 }],
+        "AP": [{ "name": "uam-backend", "address": "__UAM_BACKEND_UPSTREAM__", "weight": 10 }]
+      }
+    },
+    "api-v1": {
+      "name": "api-v1",
+      "rate_limit_max": 50000,
+      "require_auth": true,
+      "regional_upstreams": {
+        "EU": [{ "name": "demo-backend", "address": "__DEMO_BACKEND_UPSTREAM__", "weight": 10 }],
+        "US": [{ "name": "demo-backend", "address": "__DEMO_BACKEND_UPSTREAM__", "weight": 10 }],
+        "AP": [{ "name": "demo-backend", "address": "__DEMO_BACKEND_UPSTREAM__", "weight": 10 }]
+      }
+    },
+    "public-service": {
+      "name": "public-service",
+      "rate_limit_max": 1000,
+      "require_auth": false,
+      "regional_upstreams": {
+        "EU": [{ "name": "demo-backend", "address": "__DEMO_BACKEND_UPSTREAM__", "weight": 10 }],
+        "US": [{ "name": "demo-backend", "address": "__DEMO_BACKEND_UPSTREAM__", "weight": 10 }],
+        "AP": [{ "name": "demo-backend", "address": "__DEMO_BACKEND_UPSTREAM__", "weight": 10 }]
+      }
+    },
+    "ratelimit-test": {
+      "name": "ratelimit-test",
+      "rate_limit_max": 5,
+      "require_auth": false,
+      "regional_upstreams": {
+        "EU": [{ "name": "demo-backend", "address": "__DEMO_BACKEND_UPSTREAM__", "weight": 10 }],
+        "US": [{ "name": "demo-backend", "address": "__DEMO_BACKEND_UPSTREAM__", "weight": 10 }],
+        "AP": [{ "name": "demo-backend", "address": "__DEMO_BACKEND_UPSTREAM__", "weight": 10 }]
+      }
+    },
+    "default-service": {
+      "name": "default-service",
+      "rate_limit_max": 10000,
+      "require_auth": true,
+      "regional_upstreams": {
+        "EU": [{ "name": "demo-backend", "address": "__DEMO_BACKEND_UPSTREAM__", "weight": 10 }],
+        "US": [{ "name": "demo-backend", "address": "__DEMO_BACKEND_UPSTREAM__", "weight": 10 }],
+        "AP": [{ "name": "demo-backend", "address": "__DEMO_BACKEND_UPSTREAM__", "weight": 10 }]
+      }
+    }
+  }
+}

@@ -1,0 +1,31 @@
+# ==============================================================================
+# gateway-sidecar/compose.yaml — standalone smoke-test only
+# ==============================================================================
+# For full stack use dev/docker-compose.yml instead.
+#
+# Usage:
+#   cp gateway-sidecar/.env.example gateway-sidecar/.env
+#   Fill in your values in gateway-sidecar/.env
+#   docker compose up --build
+#
+# All config comes from gateway-sidecar/.env (gitignored).
+# NO secrets are hardcoded in this file.
+# ==============================================================================
+
+services:
+  gateway-sidecar:
+    build: .
+    env_file:
+      - .env
+    volumes:
+      - gateway-config:/etc/gateway
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /etc/gateway/config.json"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+    restart: unless-stopped
+
+volumes:
+  gateway-config:

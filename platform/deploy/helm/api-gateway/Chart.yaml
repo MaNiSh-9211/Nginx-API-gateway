@@ -1,0 +1,12 @@
+apiVersion: v2
+name: api-gateway
+description: Production Helm chart for the Rust+OpenResty API gateway (gateway + config-sidecar + control-plane)
+type: application
+version: 0.1.0
+appVersion: "0.6.0"
+keywords:
+  - api-gateway
+  - openresty
+  - rust
+maintainers:
+  - name: platform-team

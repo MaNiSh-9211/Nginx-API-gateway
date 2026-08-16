@@ -1,0 +1,108 @@
+# Default values for api-gateway Helm chart.
+# See docs/PRODUCTION.md and docs/decisions/ for rationale.
+
+namespace: api-gateway
+createNamespace: true
+
+images:
+  gateway:
+    repository: api-gateway
+    tag: latest
+    pullPolicy: IfNotPresent
+  configSidecar:
+    repository: config-sidecar
+    tag: latest
+    pullPolicy: IfNotPresent
+  controlPlane:
+    repository: control-plane
+    tag: latest
+    pullPolicy: IfNotPresent
+
+gateway:
+  replicas: 2
+  region: GLOBAL  # EU | US | AP | GLOBAL — see ADR-0014
+  service:
+    type: LoadBalancer
+    httpPort: 80
+    httpsPort: 443
+    targetHttpPort: 8080
+    targetHttpsPort: 8443
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: "4"
+      memory: 2Gi
+  # Mount real TLS certs in production (ADR-0016)
+  tls:
+    enabled: false
+    secretName: gateway-tls
+
+configSidecar:
+  pollSecs: 5
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+controlPlane:
+  enabled: true
+  replicas: 1
+  service:
+    port: 8081
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+redis:
+  host: redis
+  port: "6379"
+  # If set, the password is rendered into the gateway-secrets Secret (NOT the
+  # ConfigMap) and injected via secretKeyRef (ADR-0013, ADR-0028). With
+  # secrets.create=false, add a REDIS_PASSWORD key to your external secret.
+  password: ""
+  username: ""
+  tls: false   # REDIS_TLS=1 → rediss:// (ElastiCache, Azure Cache)
+
+secrets:
+  # When create=true, chart renders a Secret — REPLACE values before apply.
+  create: true
+  jwtSecret: "CHANGE_ME_use_kubectl_create_secret_or_external_secrets"
+  adminApiKey: "CHANGE_ME_use_kubectl_create_secret_or_external_secrets"
+  # Optional kid→secret map for zero-downtime JWT key rotation (ADR-0005).
+  # Tokens carrying a `kid` header are validated against this map; leave empty
+  # if you only use the single JWT_SECRET. Example:
+  #   jwtKeys:
+  #     "2026-q1": "a-long-random-secret"
+  #     "2026-q2": "another-long-random-secret"
+  jwtKeys: {}
+
+  # When non-empty, GET /config requires X-Config-Read-Token (ADR-0057).
+  configReadToken: "CHANGE_ME_use_kubectl_create_secret_or_external_secrets"
+
+# Optional: REVOCATION_FAIL_CLOSED=1 for high-assurance (ADR-0022)
+revocationFailClosed: true
+
+# Refuse worker start when JWT_SECRET is a known dev default (ADR-0041)
+refuseInsecureSecrets: true
+
+# Cloudflare Free CDN + security (ADR-0064). See platform/cloudflare/README.md
+cloudflare:
+  enabled: true
+  # When true, uncomment include cloudflare/origin-lockdown.conf in gateway-locations
+  originLockdown: false
+
+prometheus:
+  scrape: true
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/metrics"

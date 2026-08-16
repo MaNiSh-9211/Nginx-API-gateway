@@ -1,0 +1,89 @@
+# Reference NetworkPolicies — adapt before applying
+#
+# Requires a CNI that enforces NetworkPolicy (Calico, Cilium, etc.).
+# See ADR-0044: docs/decisions/0044-kubernetes-network-segmentation.md
+#
+# Apply after gateway.yaml:
+#   kubectl apply -f platform/deploy/kubernetes/network-policy.yaml
+#
+# Customize:
+#   - ingress-controller namespace/labels for north-south traffic
+#   - Redis Service name if not in-cluster
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: control-plane-ingress
+  namespace: api-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app: control-plane
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: gateway
+        - podSelector:
+            matchLabels:
+              app: config-sidecar
+      ports:
+        - protocol: TCP
+          port: 8081
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-ingress
+  namespace: api-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: gateway
+        - podSelector:
+            matchLabels:
+              app: control-plane
+      ports:
+        - protocol: TCP
+          port: 6379
+---
+# Gateway: allow HTTP/HTTPS from ingress controller namespace.
+# Replace `kubernetes.io/metadata.name: ingress-nginx` with your ingress NS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-ingress
+  namespace: api-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app: gateway
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 8443
+    # Prometheus scraping from monitoring namespace (adjust label).
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 8080

@@ -1,0 +1,112 @@
+{{- if .Values.controlPlane.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: control-plane
+  namespace: {{ include "api-gateway.namespace" . }}
+  labels:
+    app: control-plane
+    {{- include "api-gateway.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.controlPlane.replicas }}
+  selector:
+    matchLabels:
+      app: control-plane
+  template:
+    metadata:
+      labels:
+        app: control-plane
+        {{- include "api-gateway.labels" . | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: control-plane
+          image: "{{ .Values.images.controlPlane.repository }}:{{ .Values.images.controlPlane.tag }}"
+          imagePullPolicy: {{ .Values.images.controlPlane.pullPolicy }}
+          # Stateless Rust service (in-memory store, reads conf.d read-only) —
+          # fully locked down (ADR-0051).
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.controlPlane.service.port }}
+          env:
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-secrets
+                  key: JWT_SECRET
+            - name: ADMIN_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-secrets
+                  key: ADMIN_API_KEY
+            - name: CONFIG_DIR
+              value: /app/conf.d
+            - name: REDIS_HOST
+              value: {{ .Values.redis.host | quote }}
+            - name: REDIS_PORT
+              value: {{ .Values.redis.port | quote }}
+            {{- if .Values.redis.password }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-secrets
+                  key: REDIS_PASSWORD
+                  optional: true
+            {{- end }}
+            {{- if .Values.redis.username }}
+            - name: REDIS_USERNAME
+              value: {{ .Values.redis.username | quote }}
+            {{- end }}
+            {{- if .Values.redis.tls }}
+            - name: REDIS_TLS
+              value: "1"
+            {{- end }}
+            {{- if .Values.refuseInsecureSecrets }}
+            - name: CONTROL_PLANE_REFUSE_INSECURE_SECRETS
+              value: "1"
+            {{- end }}
+            - name: CONFIG_READ_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-secrets
+                  key: CONFIG_READ_TOKEN
+          resources:
+            {{- toYaml .Values.controlPlane.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: control-plane
+  namespace: {{ include "api-gateway.namespace" . }}
+  labels:
+    app: control-plane
+    {{- include "api-gateway.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: control-plane
+  ports:
+    - name: http
+      port: {{ .Values.controlPlane.service.port }}
+      targetPort: http
+{{- end }}

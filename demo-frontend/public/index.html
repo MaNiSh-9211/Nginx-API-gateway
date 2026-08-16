@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Demo App — Home</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="site-header">
+    <a href="/" class="logo">Demo<span>App</span></a>
+    <nav>
+      <a id="sign-in-nav" href="#" class="btn btn-primary">Sign in</a>
+    </nav>
+  </header>
+
+  <main class="hero">
+    <p class="eyebrow">Powered by the API Gateway</p>
+    <h1>Build products on a secure edge.</h1>
+    <p class="lead">
+      Sign in with the UAM console — full OAuth, secure cookies, and account migration.
+    </p>
+    <div class="hero-actions">
+      <a id="sign-in-hero" href="#" class="btn btn-primary btn-lg">Sign in with UAM</a>
+      <a href="/gw/health" class="btn btn-ghost btn-lg" target="_blank" rel="noopener">Gateway health</a>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <span>Demo storefront · :8090 → UAM login · :8091</span>
+  </footer>
+  <script src="runtime-config.js"></script>
+  <script src="uam-link.js"></script>
+  <script>
+    const login = uamUrl('/login');
+    document.getElementById('sign-in-nav').href = login;
+    document.getElementById('sign-in-hero').href = login;
+  </script>
+</body>
+</html>

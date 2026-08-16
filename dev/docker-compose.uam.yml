@@ -1,0 +1,186 @@
+# ============================================================
+# UAM overlay — User Access Management (frontend + backend)
+# ------------------------------------------------------------
+# Run with the base stack (+ optional testing overlay):
+#
+#   cd dev && docker compose -f docker-compose.yml -f docker-compose.uam.yml up --build
+#
+# Or full dev stack with sample APIs + UAM console:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.testing.yml -f docker-compose.uam.yml up --build
+#
+# UAM frontend: http://localhost:8091
+# Gateway (direct): http://localhost:18083
+#
+# Architecture (ADR-0050 / ADR-0052):
+#   Browser → uam-frontend (nginx) → gateway → uam-backend (auth)
+#   Browser → uam-frontend (nginx) → gateway → business APIs (JWT required)
+# ============================================================
+
+services:
+
+  # High-assurance defaults when UAM is enabled (ADR-0022, ADR-0057).
+  gateway:
+    environment:
+      - REVOCATION_FAIL_CLOSED=1
+
+  control-plane:
+    environment:
+      - CONFIG_READ_TOKEN=${CONFIG_READ_TOKEN:-uam_dev_config_read_token_change_me}
+
+  config-sidecar:
+    environment:
+      - CONFIG_READ_TOKEN=${CONFIG_READ_TOKEN:-uam_dev_config_read_token_change_me}
+      - METRICS_PORT=9092
+
+  prometheus:
+    volumes:
+      - ../platform/monitoring/prometheus/prometheus.full.yml:/etc/prometheus/prometheus.yml:ro
+      - ../platform/monitoring/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+
+  mongodb-exporter:
+    profiles: ["local-mongo"]
+    image: percona/mongodb_exporter:0.40
+    networks:
+      - internal
+    environment:
+      - MONGODB_URI=mongodb://${MONGO_ROOT_USER:-uam}:${MONGO_ROOT_PASSWORD:-uam_dev_password_change_me}@mongodb:27017/admin?authSource=admin
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  nginx-exporter:
+    image: nginx/nginx-prometheus-exporter:1.3.0
+    networks:
+      - internal
+    command:
+      - -nginx.scrape-uri=http://uam-frontend/stub_status
+    depends_on:
+      uam-frontend:
+        condition: service_started
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  mongodb:
+    profiles: ["local-mongo"]
+    image: mongo:7
+    networks:
+      - internal
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-uam}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-uam_dev_password_change_me}
+    volumes:
+      - uam-mongodb-data:/data/db
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh -u \"$$MONGO_INITDB_ROOT_USERNAME\" -p \"$$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin --eval 'db.adminCommand(\"ping\")' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  uam-backend:
+    build:
+      context: ../uam-backend
+      dockerfile: Dockerfile
+    image: uam-backend:latest
+    networks:
+      - internal
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file:
+      - path: .env
+      - path: .env.dev
+        required: false
+      - path: ../uam-backend/.env
+      - path: ../uam-backend/.env.dev
+        required: false
+    environment:
+      - PORT=8080
+      - NODE_ENV=production
+      # Local Docker serves HTTP — Secure cookies would be dropped by the browser (ADR-0055).
+      - COOKIE_SECURE=false
+      # Atlas URI in dev/.env.dev overrides local default below
+      - MONGODB_URI=${MONGODB_URI}
+      - REDIS_ENABLED=true
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      # Must match gateway JWT_SECRET (ADR-0050 contract).
+      - JWT_ACCESS_SECRET=${JWT_SECRET}
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET:-uam_refresh_secret_change_in_prod}
+      - JWT_ISSUER=api-gateway-auth-server
+      - JWT_AUDIENCE=api-gateway-clients
+      - PASSWORD_PEPPER=${PASSWORD_PEPPER:-dev_pepper_change_in_production}
+      - BCRYPT_COST=${BCRYPT_COST:-12}
+      - DEFAULT_HOME_REGION=${UAM_DEFAULT_HOME_REGION:-US}
+      - CLIENT_URL=http://localhost:${UAM_FRONTEND_PORT:-8091}
+      - CONTROL_PLANE_URL=http://control-plane:8081
+      - ADMIN_API_KEY=${ADMIN_API_KEY:-change_me_in_production}
+      # OAuth creds from env_file chain (dev/.env.dev, uam-backend/.env.dev) — do NOT override with empty compose vars
+      - GOOGLE_CALLBACK_URL=http://localhost:${UAM_FRONTEND_PORT:-8091}/api/auth/google/callback
+      - GITHUB_CALLBACK_URL=http://localhost:${UAM_FRONTEND_PORT:-8091}/api/auth/github/callback
+      # SMTP optional in dev — set in dev/.env.dev or uam-backend/.env.dev
+      - SMTP_PORT=${SMTP_PORT:-587}
+      # Local dev stack marker — allows AUTO_VERIFY_EMAIL with NODE_ENV=production (Helm must not set this).
+      - UAM_DEV_STACK=1
+      # Dev only: skip SMTP. Set UAM_AUTO_VERIFY_EMAIL=false + SMTP_* for real verification flows.
+      - AUTO_VERIFY_EMAIL=${UAM_AUTO_VERIFY_EMAIL:-true}
+      - UAM_REFUSE_INSECURE_SECRETS=${UAM_REFUSE_INSECURE_SECRETS:-0}
+      # Browser clients use HttpOnly cookies — never expose refresh in JSON (ADR-0055).
+      - AUTH_OMIT_REFRESH_IN_BODY=true
+      # Dev/test only — higher auth rate limits + Redis-backed counters (not production Helm).
+      - UAM_RELAX_AUTH_LIMITS=1
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  uam-frontend:
+    build:
+      context: ../uam-frontend
+      dockerfile: Dockerfile
+    image: uam-frontend:latest
+    ports:
+      - "${UAM_FRONTEND_PORT:-8091}:80"
+    networks:
+      - internal
+    depends_on:
+      gateway:
+        condition: service_healthy
+      uam-backend:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+volumes:
+  uam-mongodb-data:

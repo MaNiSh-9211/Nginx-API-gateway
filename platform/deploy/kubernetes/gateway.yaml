@@ -1,0 +1,242 @@
+# Kubernetes reference deployment
+#
+# Gateway pod = OpenResty container + config-sidecar (sidecar pattern).
+# Apply: kubectl apply -f platform/deploy/kubernetes/
+#
+# Prerequisites:
+#   - JWT_SECRET and ADMIN_API_KEY in a Secret (see secret.yaml)
+#   - control-plane Service reachable as control-plane:8081
+#   - Replace image tags with your registry
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: api-gateway
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gateway-secrets
+  namespace: api-gateway
+type: Opaque
+stringData:
+  # REPLACE before applying
+  JWT_SECRET: "change_me_use_a_long_random_secret"
+  ADMIN_API_KEY: "change_me_use_a_long_random_admin_key"
+  # Optional kid->secret rotation keys (JSON object). Uncomment to enable
+  # zero-downtime JWT key rotation; tokens with a `kid` header validate against
+  # this map. Secret material — keep here, never in a ConfigMap (ADR-0005/0013).
+  # JWT_KEYS: '{"2026-q1":"a-long-random-secret","2026-q2":"another-secret"}'
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-env
+  namespace: api-gateway
+data:
+  GATEWAY_REGION: "GLOBAL"
+  GATEWAY_CONFIG_PATH: "/etc/gateway/config.json"
+  CONTROL_PLANE_URL: "http://control-plane:8081"
+  REDIS_HOST: "redis"
+  CONFIG_POLL_SECS: "5"
+  GATEWAY_REFUSE_INSECURE_SECRETS: "1"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: api-gateway
+  labels:
+    app: gateway
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      # Shared volume writable by sidecar; gateway reads config.
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        # ── Data plane ──────────────────────────────────────
+        - name: gateway
+          image: api-gateway:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: https
+              containerPort: 8443
+          envFrom:
+            - configMapRef:
+                name: gateway-env
+          env:
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-secrets
+                  key: JWT_SECRET
+            # Uncomment together with JWT_KEYS in the Secret to enable rotation.
+            # - name: JWT_KEYS
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: gateway-secrets
+            #       key: JWT_KEYS
+            #       optional: true
+          volumeMounts:
+            - name: gateway-config
+              mountPath: /etc/gateway
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "4"
+              memory: "2Gi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 5
+            failureThreshold: 6
+
+        # ── Config sidecar (one per pod) ────────────────────
+        - name: config-sidecar
+          image: config-sidecar:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          envFrom:
+            - configMapRef:
+                name: gateway-env
+          volumeMounts:
+            - name: gateway-config
+              mountPath: /etc/gateway
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+
+      volumes:
+        - name: gateway-config
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: api-gateway
+spec:
+  type: LoadBalancer
+  selector:
+    app: gateway
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+    - name: https
+      port: 443
+      targetPort: 8443
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: control-plane
+  namespace: api-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: control-plane
+  template:
+    metadata:
+      labels:
+        app: control-plane
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: control-plane
+          image: control-plane:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 8081
+          env:
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-secrets
+                  key: JWT_SECRET
+            - name: ADMIN_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-secrets
+                  key: ADMIN_API_KEY
+            - name: CONFIG_DIR
+              value: /app/conf.d
+            - name: REDIS_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: gateway-env
+                  key: REDIS_HOST
+            - name: CONTROL_PLANE_REFUSE_INSECURE_SECRETS
+              value: "1"
+          # Mount your GitOps config snapshot:
+          # volumeMounts:
+          #   - name: conf
+          #     mountPath: /app/conf.d
+          #     readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: control-plane
+  namespace: api-gateway
+spec:
+  selector:
+    app: control-plane
+  ports:
+    - port: 8081
+      targetPort: 8081

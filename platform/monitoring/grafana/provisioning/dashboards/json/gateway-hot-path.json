@@ -1,0 +1,118 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "title": "Request rate",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "rate(gateway_requests_total[1m])",
+          "legendFormat": "total",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "µs" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "title": "P99 latency (µs)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, rate(gateway_latency_us_bucket[1m]))",
+          "legendFormat": "p99",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 8 },
+      "id": 3,
+      "title": "In-flight / max concurrency",
+      "type": "gauge",
+      "targets": [
+        {
+          "expr": "gateway_in_flight / gateway_max_concurrency",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.7 },
+              { "color": "red", "value": 0.9 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 8 },
+      "id": 4,
+      "title": "Circuit breaker state",
+      "type": "stat",
+      "targets": [
+        { "expr": "gateway_circuit_breaker_state", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "CLOSED" } } },
+            { "type": "value", "options": { "1": { "text": "OPEN" } } },
+            { "type": "value", "options": { "2": { "text": "HALF-OPEN" } } }
+          ]
+        },
+        "overrides": []
+      }
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 8 },
+      "id": 5,
+      "title": "401 / 429 / 5xx rate",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "rate(gateway_requests_401_total[1m])", "legendFormat": "401", "refId": "A" },
+        { "expr": "rate(gateway_requests_429_total[1m])", "legendFormat": "429", "refId": "B" },
+        { "expr": "rate(gateway_requests_5xx_total[1m])", "legendFormat": "5xx", "refId": "C" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 8 },
+      "id": 6,
+      "title": "WAF blocks / s",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "rate(gateway_waf_blocks_total[1m])", "legendFormat": "waf", "refId": "A" }
+      ]
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "tags": ["gateway"],
+  "templating": { "list": [] },
+  "time": { "from": "now-15m", "to": "now" },
+  "title": "API Gateway — Hot Path",
+  "uid": "api-gateway-hot-path",
+  "version": 1
+}

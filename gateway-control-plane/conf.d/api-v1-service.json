@@ -1,0 +1,21 @@
+{
+  "name": "api-v1",
+  "rate_limit_max": 50000,
+  "require_auth": true,
+  "regional_upstreams": {
+    "EU": [
+      { "name": "api-eu-1", "address": "api-eu-1:8080", "weight": 10 },
+      { "name": "api-eu-2", "address": "api-eu-2:8080", "weight": 10 },
+      { "name": "api-eu-3", "address": "api-eu-3:8080", "weight": 5 }
+    ],
+    "US": [
+      { "name": "api-us-1", "address": "api-us-1:8080", "weight": 10 },
+      { "name": "api-us-2", "address": "api-us-2:8080", "weight": 10 },
+      { "name": "api-us-3", "address": "api-us-3:8080", "weight": 5 }
+    ],
+    "AP": [
+      { "name": "api-ap-1", "address": "api-ap-1:8080", "weight": 10 },
+      { "name": "api-ap-2", "address": "api-ap-2:8080", "weight": 10 }
+    ]
+  }
+}

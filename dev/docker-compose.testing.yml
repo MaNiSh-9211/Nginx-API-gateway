@@ -1,0 +1,97 @@
+# ============================================================
+# Testing overlay — frontend + backend test services
+# ------------------------------------------------------------
+# Run together with the base stack:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.testing.yml up --build
+#
+# What it does:
+#   * Replaces the generic `echo-backend` with `backend-test-service`, a real
+#     sample API that echoes the identity headers the gateway injects and mints
+#     dev JWTs at /auth/dev-token.
+#   * Adds `frontend-test-service`, a web console (http://localhost:8090) that
+#     reverse-proxies to the gateway / control-plane / token minter so the
+#     browser stays same-origin (no CORS).
+#
+# The echo-backend is moved behind the `legacy-echo` profile, so it no longer
+# starts by default when this overlay is applied (its upstream aliases would
+# otherwise collide with backend-test-service). Re-enable it with:
+#   docker compose ... --profile legacy-echo up
+# ============================================================
+
+services:
+
+  echo-backend:
+    profiles: ["legacy-echo"]
+
+  # ── Backend test service (real sample upstream + dev token minter) ──
+  backend-test-service:
+    build:
+      context: ../demo-backend
+      dockerfile: Dockerfile
+    image: backend-test-service:latest
+    env_file:
+      - path: .env
+      - path: .env.dev
+        required: false
+      - path: ../demo-backend/.env
+      - path: ../demo-backend/.env.dev
+        required: false
+    environment:
+      - PORT=8080
+      - JWT_SECRET=${JWT_SECRET}
+      - EXPECTED_ISSUER=api-gateway-auth-server
+      - EXPECTED_AUDIENCE=api-gateway-clients
+      # Set to 0 once you wire in a real auth service behind the /auth proxy.
+      - AUTH_DEV_TOKENS=${AUTH_DEV_TOKENS:-1}
+      - PASSWORD_PEPPER=${PASSWORD_PEPPER:-dev_pepper_change_in_production}
+      - BCRYPT_COST=${BCRYPT_COST:-12}
+      - USER_STORE_PATH=/app/data/users.json
+    volumes:
+      - backend-auth-data:/app/data
+    networks:
+      internal:
+        # Take over every upstream alias the gateway routes to, so real
+        # gateway traffic lands on this service instead of the echo server.
+        aliases:
+          - api-eu-1
+          - api-eu-2
+          - api-us-1
+          - api-us-2
+          - api-ap-1
+          - pub-eu-1
+          - pub-us-1
+          - pub-ap-1
+          - eu-backend-1
+          - eu-backend-2
+          - us-backend-1
+          - us-backend-2
+          - ap-backend-1
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # ── Frontend test console (SPA + same-origin reverse proxy) ──
+  frontend-test-service:
+    build:
+      context: ../demo-frontend
+      dockerfile: Dockerfile
+    image: frontend-test-service:latest
+    ports:
+      - "${FRONTEND_TEST_PORT:-8090}:80"
+    networks:
+      - internal
+    depends_on:
+      - backend-test-service
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+volumes:
+  backend-auth-data:

@@ -1,0 +1,27 @@
+# ==============================================================================
+# uam-frontend/compose.yaml — standalone smoke-test only
+# ==============================================================================
+# For full stack use dev/docker-compose.yml instead.
+#
+# Usage:
+#   cp uam-frontend/.env.example uam-frontend/.env
+#   Fill in your values in uam-frontend/.env
+#   docker compose up --build
+#
+# All config comes from uam-frontend/.env (gitignored).
+# ==============================================================================
+
+services:
+  uam-frontend:
+    build: .
+    ports:
+      - "${UAM_FRONTEND_PORT:-8091}:80"
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:80/"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped

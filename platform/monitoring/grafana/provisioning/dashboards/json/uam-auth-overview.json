@@ -1,0 +1,77 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "title": "UAM request rate",
+      "type": "timeseries",
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "sum(rate(uam_http_requests_total[1m])) by (route)",
+          "legendFormat": "{{route}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "title": "UAM P99 latency",
+      "type": "timeseries",
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(uam_http_request_duration_seconds_bucket[5m])) by (le, route))",
+          "legendFormat": "{{route}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 8 },
+      "id": 3,
+      "title": "4xx / 5xx rate",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "sum(rate(uam_http_requests_total{status=~\"4..\"}[1m]))", "legendFormat": "4xx", "refId": "A" },
+        { "expr": "sum(rate(uam_http_requests_total{status=~\"5..\"}[1m]))", "legendFormat": "5xx", "refId": "B" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 8 },
+      "id": 4,
+      "title": "MongoDB connections",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "mongodb_ss_connections{conn_type=\"current\"}", "legendFormat": "current", "refId": "A" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 8 },
+      "id": 5,
+      "title": "UAM frontend nginx requests",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "rate(nginx_http_requests_total[1m])", "legendFormat": "{{status}}", "refId": "A" }
+      ]
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["uam"],
+  "time": { "from": "now-15m", "to": "now" },
+  "title": "UAM — Auth Service",
+  "uid": "uam-auth-overview",
+  "version": 1
+}

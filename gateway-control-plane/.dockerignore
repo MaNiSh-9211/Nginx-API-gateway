@@ -1,0 +1,6 @@
+target/
+.git/
+*.log
+.env
+.env.*
+# conf.d/ — template is baked into the image; snapshot generated at startup

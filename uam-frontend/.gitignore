@@ -1,0 +1,35 @@
+﻿# Real credentials â€” NEVER commit. Copy .env.example â†’ .env.dev locally.
+.env.dev
+.env.local
+
+# Node.js
+node_modules/
+dist/
+dist-ssr/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Rust
+target/
+**/target/
+**/*.rs.bk
+
+# Logs & temp debug artifacts
+*.log
+logs/
+curl_output.txt
+pid_check.txt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Dev runtime data (demo-backend)
+data/users.json
