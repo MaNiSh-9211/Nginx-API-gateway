@@ -18,6 +18,9 @@ use std::sync::{Arc, Mutex};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
+mod redis_cb;
+mod store;
+
 type HmacSha256 = Hmac<Sha256>;
 
 // ── Data models ───────────────────────────────────────────────────────────────
@@ -87,6 +90,7 @@ struct ConfigStore {
 }
 
 impl ConfigStore {
+    #[cfg(test)]
     fn new(initial: ConfigSnapshot, history_limit: usize) -> Self {
         Self { history: vec![initial], history_limit }
     }
@@ -125,6 +129,7 @@ type WriteStore = Arc<Mutex<ConfigStore>>;
 struct AppState {
     live:  LiveConfig,
     store: WriteStore,
+    db:    Option<store::Store>,
 }
 
 // ── Admin API authentication ──────────────────────────────────────────────────
@@ -150,23 +155,33 @@ fn check_and_record_admin_nonce(nonce: &str, now: u64) -> bool {
     }
 
     // Prefer Redis — works across control-plane replicas.
-    if let Ok(client) = redis::Client::open(redis_url().as_str()) {
-        if let Ok(mut con) = client.get_connection() {
-            let key = format!("admin:nonce:{nonce}");
-            let inserted: redis::RedisResult<bool> = redis::cmd("SET")
-                .arg(&key)
-                .arg("1")
-                .arg("NX")
-                .arg("EX")
-                .arg(ADMIN_NONCE_TTL_SECS)
-                .query(&mut con);
-            if let Ok(true) = inserted {
-                return true;
-            }
-            if let Ok(false) = inserted {
-                return false; // replay
-            }
-            // Redis error — fall through to memory
+    // Circuit-breaker protected: when Redis is OPEN/slow/down the breaker
+    // rejects immediately (§17) and we fall through to the in-memory fallback
+    // without ever waiting on a hung Redis (§14, §15).
+    let redis_result = redis_cb::with_circuit_breaker(|| {
+        let mut con = match redis_cb::open_redis_connection() {
+            Ok(c) => c,
+            Err(outcome) => return Err(outcome),
+        };
+        let key = format!("admin:nonce:{nonce}");
+        let inserted: redis::RedisResult<bool> = redis::cmd("SET")
+            .arg(&key)
+            .arg("1")
+            .arg("NX")
+            .arg("EX")
+            .arg(ADMIN_NONCE_TTL_SECS)
+            .query(&mut con);
+        match inserted {
+            Ok(v) => Ok(v),
+            Err(e) => Err(redis_cb::classify_redis_error(&e)),
+        }
+    });
+
+    match redis_result {
+        Ok(true) => return true,
+        Ok(false) => return false, // replay
+        Err(_) => {
+            // Redis error/timeout/circuit-open — fall through to memory
         }
     }
 
@@ -408,6 +423,28 @@ async fn post_config(
     // They are never serialized back out via GET /config
 
     let version = new_snap.version.clone();
+    let actor_ip = req
+        .peer_addr()
+        .map(|a| a.ip().to_string())
+        .unwrap_or_default();
+
+    // Durable-first: persist the revision BEFORE activating it. If Postgres is
+    // configured but the write fails, reject — an un-audited config change is
+    // worse than a rejected one (ADR-0011 audit trail).
+    if let Some(db) = &state.db {
+        let snapshot = match serde_json::to_value(&new_snap) {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("POST /config: snapshot serialization failed: {e}");
+                return HttpResponse::InternalServerError().body("Snapshot serialization failed");
+            }
+        };
+        if let Err(e) = db.record(&version, "apply", &actor_ip, &snapshot).await {
+            log::error!("POST /config: durable write failed for version {version}: {e}");
+            return HttpResponse::ServiceUnavailable()
+                .body("Config store (Postgres) unavailable — change rejected");
+        }
+    }
 
     match state.store.lock() {
         Ok(mut store) => {
@@ -431,34 +468,105 @@ async fn rollback_config(req: HttpRequest, state: web::Data<AppState>) -> impl R
         log::warn!("POST /config/rollback rejected: invalid or missing X-Admin-Signature");
         return HttpResponse::Unauthorized().body("Missing or invalid X-Admin-Signature");
     }
-    match state.store.lock() {
-        Ok(mut store) => {
-            store.pop();
-            let prev = store.current().clone();
-            state.live.store(Arc::new(prev.clone()));
-            log::info!("Config rolled back to version {}", prev.version);
-            HttpResponse::Ok().json(serde_json::json!({
-                "status": "rolled_back",
-                "version": prev.version,
-            }))
+    let prev = {
+        let mut store = match state.store.lock() {
+            Ok(s) => s,
+            Err(_) => return HttpResponse::InternalServerError().body("Config store lock poisoned"),
+        };
+        store.pop();
+        store.current().clone()
+    };
+    state.live.store(Arc::new(prev.clone()));
+    log::info!("Config rolled back to version {}", prev.version);
+
+    // Durable-first: record the rollback BEFORE responding success.
+    if let Some(db) = &state.db {
+        let actor_ip = req
+            .peer_addr()
+            .map(|a| a.ip().to_string())
+            .unwrap_or_default();
+        let snapshot = match serde_json::to_value(&prev) {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("POST /config/rollback: snapshot serialization failed: {e}");
+                return HttpResponse::InternalServerError().body("Snapshot serialization failed");
+            }
+        };
+        if let Err(e) = db.record(&prev.version, "rollback", &actor_ip, &snapshot).await {
+            log::error!(
+                "POST /config/rollback: durable write failed for version {}: {e}",
+                prev.version
+            );
+            return HttpResponse::ServiceUnavailable()
+                .body("Config store (Postgres) unavailable — rollback rejected");
         }
-        Err(_) => HttpResponse::InternalServerError().body("Config store lock poisoned"),
     }
+
+    HttpResponse::Ok().json(serde_json::json!({
+        "status": "rolled_back",
+        "version": prev.version,
+    }))
 }
 
-/// GET /config/history — list stored version strings
+/// GET /config/history — durable + in-memory version strings (newest first)
 async fn config_history(req: HttpRequest, state: web::Data<AppState>) -> impl Responder {
     if !verify_config_read_token(&req) {
         log::warn!("GET /config/history rejected: missing or invalid X-Config-Read-Token");
         return HttpResponse::Unauthorized().body("Missing or invalid X-Config-Read-Token");
     }
-    match state.store.lock() {
-        Ok(store) => {
-            let versions: Vec<&str> =
-                store.history.iter().map(|c| c.version.as_str()).collect();
-            HttpResponse::Ok().json(versions)
+
+    // Durable history (Postgres) first, newest first.
+    let mut durable: Vec<String> = match &state.db {
+        Some(db) => match db.versions().await {
+            Ok(v) => v,
+            Err(e) => {
+                log::warn!("GET /config/history: durable read failed: {e}");
+                Vec::new()
+            }
+        },
+        None => Vec::new(),
+    };
+
+    // Append in-memory versions not yet persisted (e.g. seeded initial config).
+    if let Ok(store) = state.store.lock() {
+        for c in store.history.iter().rev() {
+            if !durable.contains(&c.version) {
+                durable.push(c.version.clone());
+            }
         }
-        Err(_) => HttpResponse::InternalServerError().body("Config store lock poisoned"),
+    }
+
+    HttpResponse::Ok().json(durable)
+}
+
+/// GET /config/audit — full durable audit trail (action, actor, timestamp).
+async fn config_audit(req: HttpRequest, state: web::Data<AppState>) -> impl Responder {
+    if !verify_config_read_token(&req) {
+        log::warn!("GET /config/audit rejected: missing or invalid X-Config-Read-Token");
+        return HttpResponse::Unauthorized().body("Missing or invalid X-Config-Read-Token");
+    }
+    let Some(db) = &state.db else {
+        return HttpResponse::Ok().json(Vec::<serde_json::Value>::new());
+    };
+    match db.list(200).await {
+        Ok(rows) => {
+            let values: Vec<serde_json::Value> = rows
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "version":   r.version,
+                        "action":    r.action,
+                        "actor_ip":  r.actor_ip,
+                        "created_at": r.created_at,
+                    })
+                })
+                .collect();
+            HttpResponse::Ok().json(values)
+        }
+        Err(e) => {
+            log::warn!("GET /config/audit: durable read failed: {e}");
+            HttpResponse::InternalServerError().body("Audit read failed")
+        }
     }
 }
 
@@ -475,27 +583,6 @@ struct RevokeRequest {
     ttl_secs: u64,
 }
 fn default_revoke_ttl() -> u64 { 3600 }
-
-/// Build Redis URL for revocation writes. Mirrors gateway `auth::redis_url`.
-fn redis_url() -> String {
-    let scheme = if std::env::var("REDIS_TLS")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-    {
-        "rediss"
-    } else {
-        "redis"
-    };
-    let host = std::env::var("REDIS_HOST").unwrap_or_else(|_| "redis".to_string());
-    let port = std::env::var("REDIS_PORT").unwrap_or_else(|_| "6379".to_string());
-    let user = std::env::var("REDIS_USERNAME").ok().filter(|s| !s.is_empty());
-    let pass = std::env::var("REDIS_PASSWORD").ok().filter(|s| !s.is_empty());
-    match (user, pass) {
-        (Some(u), Some(p)) => format!("{scheme}://{u}:{p}@{host}:{port}"),
-        (None, Some(p)) => format!("{scheme}://:{p}@{host}:{port}"),
-        _ => format!("{scheme}://{host}:{port}"),
-    }
-}
 
 /// SHA-256 of the full JWT, lowercase hex — must match gateway `token_hash_hex`.
 fn token_hash_hex(token: &str) -> String {
@@ -522,22 +609,32 @@ fn revocation_keys_for_request(req: &RevokeRequest) -> Result<Vec<String>, &'sta
 }
 
 /// Write revocation markers to Redis with TTL.
+///
+/// Circuit-breaker protected: when Redis is OPEN/slow/down the breaker rejects
+/// immediately (§17) so `POST /revoke` fails fast with 503 instead of waiting
+/// on a hung Redis (§14, §15).
 fn write_revocation_keys(keys: &[String], ttl_secs: u64) -> Result<(), String> {
-    let client = redis::Client::open(redis_url().as_str())
-        .map_err(|e| format!("redis client: {e}"))?;
-    let mut con = client
-        .get_connection()
-        .map_err(|e| format!("redis connect: {e}"))?;
-    for key in keys {
-        redis::cmd("SET")
-            .arg(key)
-            .arg("1")
-            .arg("EX")
-            .arg(ttl_secs)
-            .query::<()>(&mut con)
-            .map_err(|e| format!("redis SET {key}: {e}"))?;
+    let result = redis_cb::with_circuit_breaker(|| {
+        let mut con = match redis_cb::open_redis_connection() {
+            Ok(c) => c,
+            Err(outcome) => return Err(outcome),
+        };
+        for key in keys {
+            redis::cmd("SET")
+                .arg(key)
+                .arg("1")
+                .arg("EX")
+                .arg(ttl_secs)
+                .query::<()>(&mut con)
+                .map_err(|e| redis_cb::classify_redis_error(&e))?;
+        }
+        Ok(())
+    });
+
+    match result {
+        Ok(()) => Ok(()),
+        Err(outcome) => Err(format!("redis unavailable: {outcome:?}")),
     }
-    Ok(())
 }
 
 /// POST /revoke — publish token revocation to Redis (requires X-Admin-Signature).
@@ -610,10 +707,26 @@ async fn post_telemetry(payload: web::Json<TelemetryPayload>) -> impl Responder 
 
 // ── Health ────────────────────────────────────────────────────────────────────
 
-async fn health() -> impl Responder {
+async fn health(state: web::Data<AppState>) -> impl Responder {
+    // Dependency-health evaluator: surface the local Redis circuit state and
+    // the config store (Postgres) so orchestrators can distinguish a healthy
+    // control plane from one degrading toward an OPEN Redis circuit.
+    let cb = redis_cb::get_cb();
+    let redis_state = match cb.state() {
+        0 => "closed",
+        1 => "open",
+        _ => "half_open",
+    };
+    let pg_state = match &state.db {
+        Some(db) if db.ping().await => "ok",
+        Some(_) => "unreachable",
+        None => "disabled",
+    };
     HttpResponse::Ok().json(serde_json::json!({
-        "status":  "healthy",
-        "service": "control-plane"
+        "status":        "healthy",
+        "service":       "control-plane",
+        "redis_circuit": redis_state,
+        "postgres":      pg_state,
     }))
 }
 
@@ -642,7 +755,9 @@ async fn metrics(state: web::Data<AppState>) -> impl Responder {
          control_plane_config_routes {routes}\n\
          # HELP control_plane_config_history Versions retained in history\n\
          # TYPE control_plane_config_history gauge\n\
-         control_plane_config_history {history}\n"
+         control_plane_config_history {history}\n\
+         {}\n",
+        redis_cb::prometheus_metrics()
     );
 
     HttpResponse::Ok()
@@ -753,6 +868,58 @@ fn build_fallback(snap: &mut ConfigSnapshot) {
     });
 }
 
+/// Build the initial in-memory state.
+///
+/// - If durable revisions exist in Postgres, rebuild history from them
+///   (jwt_secret is always re-applied from env — ADR-0013).
+/// - Otherwise load from `conf.d` and seed it as the first durable revision.
+async fn rebuild_initial_state(
+    db: &Option<store::Store>,
+    history_limit: usize,
+) -> (ConfigSnapshot, Vec<ConfigSnapshot>) {
+    let jwt_secret = std::env::var("JWT_SECRET")
+        .unwrap_or_else(|_| "super_secret_key_for_hmac_sha256".to_string());
+    let max_concurrency = std::env::var("MAX_CONCURRENCY")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10_000usize);
+
+    if let Some(db) = db {
+        if let Ok(snaps) = db.history_snapshots(history_limit as i64).await {
+            if !snaps.is_empty() {
+                let mut history: Vec<ConfigSnapshot> = Vec::with_capacity(snaps.len());
+                for (_, snap_json) in &snaps {
+                    if let Ok(mut snap) = serde_json::from_value::<ConfigSnapshot>(snap_json.clone())
+                    {
+                        snap.jwt_secret = jwt_secret.clone();
+                        snap.global_max_concurrency = max_concurrency;
+                        history.push(snap);
+                    }
+                }
+                if let Some(latest) = history.last() {
+                    return (latest.clone(), history);
+                }
+            }
+        }
+    }
+
+    // Nothing durable — seed from conf.d.
+    let initial = load_initial_config();
+    if let Some(db) = db {
+        let snapshot = match serde_json::to_value(&initial) {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("seed snapshot serialization failed: {e}");
+                serde_json::json!({})
+            }
+        };
+        if let Err(e) = db.record(&initial.version, "seed", "", &snapshot).await {
+            log::warn!("seed revision write failed: {e}");
+        }
+    }
+    (initial.clone(), vec![initial])
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 #[actix_web::main]
@@ -769,12 +936,32 @@ async fn main() -> std::io::Result<()> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(20usize);
 
-    let initial = load_initial_config();
+    // Durable state store (Postgres, isolated `control_plane` schema). Optional:
+    // without it the control plane degrades to in-memory history only.
+    let db = match store::Store::connect().await {
+        Ok(Some(s)) => Some(s),
+        Ok(None) => None,
+        Err(e) => {
+            log::error!("PostgreSQL unavailable — config history in-memory only: {e}");
+            None
+        }
+    };
+
+    // Rebuild in-memory state from durable history if available, so rollback
+    // keeps working across restarts; otherwise fall back to conf.d config.
+    let (initial, history) = rebuild_initial_state(&db, history_limit).await;
+    if history.len() > 1 {
+        log::info!(
+            "Restored {} durable config revision(s) from Postgres (latest: {})",
+            history.len(),
+            initial.version
+        );
+    }
 
     let live  = Arc::new(ArcSwap::from_pointee(initial.clone()));
-    let store = Arc::new(Mutex::new(ConfigStore::new(initial, history_limit)));
+    let store = Arc::new(Mutex::new(ConfigStore { history, history_limit }));
 
-    let app_state = web::Data::new(AppState { live, store });
+    let app_state = web::Data::new(AppState { live, store, db });
 
     let port    = std::env::var("PORT").unwrap_or_else(|_| "8081".to_string());
     let workers = std::env::var("WORKERS")
@@ -794,6 +981,7 @@ async fn main() -> std::io::Result<()> {
             .route("/config",          web::post().to(post_config))
             .route("/config/rollback", web::post().to(rollback_config))
             .route("/config/history",  web::get().to(config_history))
+            .route("/config/audit",    web::get().to(config_audit))
             .route("/revoke",          web::post().to(post_revoke))
             .route("/telemetry",       web::post().to(post_telemetry))
     })

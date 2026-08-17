@@ -1,19 +1,19 @@
-//! Gateway FFI Entrypoint — Ultra-Scale API Gateway v0.6
+//! Gateway FFI Entrypoint — Ultra-Scale API Gateway v0.7
 //!
 //! Hot-path execution order (per request, total ~300–600 ns):
 //!   1. backpressure::acquire()          — fail-fast if overloaded       (~5 ns)
 //!   2. waf::inspect()                   — URI + body + IP rate limit    (~200 ns)
 //!   3. auth::validate_token()           — alg/nbf/kid/revocation + LRU  (~50 ns cached)
 //!   4. router::route_request()          — path match + data residency   (~10 ns)
-//!   5. rate_limit::check_rate_limit()   — per-user shared-memory bucket (~15 ns)
+//!   5. rate_limit::check_rate_limit()   — local bucket + async Redis    (~20 ns)
 //!   6. load_balancing::select_upstream() — P2C + consistent hash + EMA   (~20 ns)
 //!   7. write_c_string()                 — fill output buffers           (~5 ns)
 //!
-//! New in v0.6:
-//!   - WAF body inspection (POST/PUT/PATCH)
-//!   - Per-IP rate limiting for anonymous traffic
-//!   - X-Request-ID generation and propagation
-//!   - JWT alg/nbf/kid/revocation enforcement
+//! New in v0.7:
+//!   - Distributed rate limiting: Redis EVALSHA fleet-wide counter sync
+//!   - Fail-open: Redis failure → local mmap bucket enforces (no request blocked)
+//!   - REDIS_URL env var support (Upstash full-URL format)
+//!   - New Prometheus metrics: rl_redis_syncs, rl_redis_sync_errors, rl_restarts
 
 mod auth;
 mod backpressure;
@@ -21,6 +21,7 @@ mod cache;
 pub mod config;
 mod load_balancing;
 mod rate_limit;
+pub mod redis_cb;
 mod router;
 pub mod telemetry;
 mod waf;
@@ -47,6 +48,7 @@ pub extern "C" fn init_extension() {
     warn_insecure_secrets();
     config::start_config_sync();
     telemetry::start_telemetry_sync();
+    rate_limit::start_rl_redis_sync();
 }
 
 /// Log a loud warning when known dev/default secrets are in use.

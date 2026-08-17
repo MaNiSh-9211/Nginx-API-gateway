@@ -41,16 +41,16 @@ app.get('/health', (_req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-/** Readiness — MongoDB pool + Redis cache must answer before accepting traffic (K8s). */
+/** Readiness — Postgres pool + Redis cache must answer before accepting traffic (K8s). */
 app.get('/ready', async (_req, res) => {
-    const mongoOk = await pingDatabase();
+    const dbOk = await pingDatabase();
     const redisRequired = config.redis.enabled;
     const redisOk = redisRequired ? await pingRedisCache() : true;
 
-    if (mongoOk && redisOk) {
+    if (dbOk && redisOk) {
         res.json({
             status: 'ready',
-            mongodb: true,
+            postgres: true,
             redis: redisRequired ? true : 'disabled',
             timestamp: new Date().toISOString(),
         });
@@ -59,7 +59,7 @@ app.get('/ready', async (_req, res) => {
 
     res.status(503).json({
         status: 'not_ready',
-        mongodb: mongoOk,
+        postgres: dbOk,
         redis: redisRequired ? redisOk : 'disabled',
         timestamp: new Date().toISOString(),
     });

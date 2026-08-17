@@ -88,6 +88,8 @@ pub fn prometheus_text() -> String {
     use crate::load_balancing::global_state;
     use crate::config::GLOBAL_CONFIG;
     use crate::waf::waf_blocks_total;
+    use crate::rate_limit::{RL_REDIS_SYNCS_OK, RL_REDIS_SYNCS_ERR, RL_SYNC_THREAD_RESTARTS};
+    use crate::redis_cb::get_cb;
 
     let m = get_metrics();
     let cfg = GLOBAL_CONFIG.load();
@@ -105,6 +107,24 @@ pub fn prometheus_text() -> String {
     let ready  = if crate::config::is_config_ready() { 1 } else { 0 };
     let cache_hits = crate::cache::CACHE_HITS.load(Ordering::Relaxed);
     let cache_miss = crate::cache::CACHE_MISSES.load(Ordering::Relaxed);
+    let rl_syncs_ok  = RL_REDIS_SYNCS_OK.load(Ordering::Relaxed);
+    let rl_syncs_err = RL_REDIS_SYNCS_ERR.load(Ordering::Relaxed);
+    let rl_restarts  = RL_SYNC_THREAD_RESTARTS.load(Ordering::Relaxed);
+    let rl_redis_enabled: u8 = if crate::rate_limit::rl_redis_enabled_pub() { 1 } else { 0 };
+
+    // Circuit breaker metrics
+    let cb_inst = get_cb();
+    let redis_req_total   = cb_inst.redis_requests_total.load(Ordering::Relaxed);
+    let redis_ok_total    = cb_inst.redis_success_total.load(Ordering::Relaxed);
+    let redis_err_total   = cb_inst.redis_errors_total.load(Ordering::Relaxed);
+    let redis_to_total    = cb_inst.redis_timeouts_total.load(Ordering::Relaxed);
+    let cb_open_total     = cb_inst.circuit_open_total.load(Ordering::Relaxed);
+    let cb_half_open_total = cb_inst.circuit_half_open_total.load(Ordering::Relaxed);
+    let cb_rejected_total = cb_inst.circuit_rejected_total.load(Ordering::Relaxed);
+    let cb_state_val      = cb_inst.state();   // 0=CLOSED, 1=OPEN, 2=HALF_OPEN
+    let cb_inflight       = cb_inst.inflight_count();
+    let cb_p99_us         = cb_inst.p99_us();
+    let cb_err_rate       = cb_inst.error_rate();
 
     let mut out = String::with_capacity(2_048);
 
@@ -161,7 +181,52 @@ pub fn prometheus_text() -> String {
          gateway_circuit_breaker_state {cb}\n\
          # HELP gateway_up Gateway process is up\n\
          # TYPE gateway_up gauge\n\
-         gateway_up 1\n"
+         gateway_up 1\n\
+         # HELP gateway_rate_limit_redis_syncs_total Successful fleet-wide RL Redis syncs\n\
+         # TYPE gateway_rate_limit_redis_syncs_total counter\n\
+         gateway_rate_limit_redis_syncs_total {rl_syncs_ok}\n\
+         # HELP gateway_rate_limit_redis_sync_errors_total Failed RL Redis syncs (fail-open)\n\
+         # TYPE gateway_rate_limit_redis_sync_errors_total counter\n\
+         gateway_rate_limit_redis_sync_errors_total {rl_syncs_err}\n\
+         # HELP gateway_rate_limit_sync_thread_restarts_total Times RL sync thread restarted\n\
+         # TYPE gateway_rate_limit_sync_thread_restarts_total counter\n\
+         gateway_rate_limit_sync_thread_restarts_total {rl_restarts}\n\
+         # HELP gateway_rate_limit_redis_enabled 1 if Redis fleet sync is active\n\
+         # TYPE gateway_rate_limit_redis_enabled gauge\n\
+         gateway_rate_limit_redis_enabled {rl_redis_enabled}\n\
+         # HELP redis_requests_total Total Redis operations attempted\n\
+         # TYPE redis_requests_total counter\n\
+         redis_requests_total {redis_req_total}\n\
+         # HELP redis_success_total Successful Redis operations\n\
+         # TYPE redis_success_total counter\n\
+         redis_success_total {redis_ok_total}\n\
+         # HELP redis_errors_total Redis operation errors (excludes timeouts)\n\
+         # TYPE redis_errors_total counter\n\
+         redis_errors_total {redis_err_total}\n\
+         # HELP redis_timeouts_total Redis operation timeouts\n\
+         # TYPE redis_timeouts_total counter\n\
+         redis_timeouts_total {redis_to_total}\n\
+         # HELP redis_circuit_state Circuit breaker state (0=CLOSED,1=OPEN,2=HALF_OPEN)\n\
+         # TYPE redis_circuit_state gauge\n\
+         redis_circuit_state {cb_state_val}\n\
+         # HELP redis_circuit_open_total Times circuit transitioned to OPEN\n\
+         # TYPE redis_circuit_open_total counter\n\
+         redis_circuit_open_total {cb_open_total}\n\
+         # HELP redis_circuit_half_open_total Times circuit transitioned to HALF_OPEN\n\
+         # TYPE redis_circuit_half_open_total counter\n\
+         redis_circuit_half_open_total {cb_half_open_total}\n\
+         # HELP redis_circuit_rejected_total Requests rejected because circuit was OPEN or concurrency limit hit\n\
+         # TYPE redis_circuit_rejected_total counter\n\
+         redis_circuit_rejected_total {cb_rejected_total}\n\
+         # HELP redis_inflight_current Current Redis operations in flight\n\
+         # TYPE redis_inflight_current gauge\n\
+         redis_inflight_current {cb_inflight}\n\
+         # HELP redis_latency_p99_us Rolling p99 Redis latency in microseconds\n\
+         # TYPE redis_latency_p99_us gauge\n\
+         redis_latency_p99_us {cb_p99_us}\n\
+         # HELP redis_error_rate_rolling Rolling error rate (0.0-1.0)\n\
+         # TYPE redis_error_rate_rolling gauge\n\
+         redis_error_rate_rolling {cb_err_rate:.4}\n"
     ));
 
     out

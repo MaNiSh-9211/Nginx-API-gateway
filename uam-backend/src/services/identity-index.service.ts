@@ -1,14 +1,13 @@
 import crypto from 'crypto';
-import mongoose from 'mongoose';
 import { config } from '../config';
 import { IUser } from '../models/User';
-import { UserIdentityIndex, IdentityIndexKind } from '../models/UserIdentityIndex';
+import { UserIdentityIndex } from '../models/UserIdentityIndex';
 import { normalizeEmail } from '../utils/email-normalize.util';
 
 export type EmailResolveMatch = 'primary' | 'previous' | 'pending_migration';
 
 export interface ResolvedEmailIdentity {
-    userId: mongoose.Types.ObjectId;
+    userId: string;
     match: EmailResolveMatch;
     verified?: boolean;
 }
@@ -33,18 +32,9 @@ function isActive(doc: { expiresAt?: Date | null }): boolean {
 }
 
 export async function ensureIdentityIndexIndexes(): Promise<void> {
-    try {
-        await UserIdentityIndex.syncIndexes();
-    } catch (err: unknown) {
-        const mongoErr = err as { code?: number; codeName?: string };
-        if (mongoErr?.code === 86 || mongoErr?.codeName === 'IndexKeySpecsConflict') {
-            // Dev DB may have a plain expiresAt_1 from an earlier schema — drop and resync.
-            await UserIdentityIndex.collection.dropIndex('expiresAt_1').catch(() => undefined);
-            await UserIdentityIndex.syncIndexes();
-            return;
-        }
-        throw err;
-    }
+    // No-op — indexes are created by DB migrations (001_init). Retained for
+    // call-site compatibility with the old Mongo driver error handling.
+    return;
 }
 
 /** Resolve email to userId via inverted indexes (primary → previous → pending migration). */
@@ -60,7 +50,7 @@ export async function resolveEmailIdentity(email: string): Promise<ResolvedEmail
         const doc = await UserIdentityIndex.findOne({ key: emailKey(kind, normalized) }).lean();
         if (!doc || !isActive(doc)) continue;
         return {
-            userId: doc.userId as mongoose.Types.ObjectId,
+            userId: doc.userId,
             match,
             verified: doc.verified,
         };
@@ -68,30 +58,30 @@ export async function resolveEmailIdentity(email: string): Promise<ResolvedEmail
     return null;
 }
 
-export async function findUserIdByPrimaryEmail(email: string): Promise<mongoose.Types.ObjectId | null> {
+export async function findUserIdByPrimaryEmail(email: string): Promise<string | null> {
     const doc = await UserIdentityIndex.findOne({ key: emailKey('primary_email', email) }).lean();
     if (!doc || !isActive(doc)) return null;
-    return doc.userId as mongoose.Types.ObjectId;
+    return doc.userId;
 }
 
-export async function findPendingMigrationHolder(email: string): Promise<mongoose.Types.ObjectId | null> {
+export async function findPendingMigrationHolder(email: string): Promise<string | null> {
     const doc = await UserIdentityIndex.findOne({
         key: emailKey('pending_migration', email),
         expiresAt: { $gt: new Date() },
     }).lean();
-    return doc ? (doc.userId as mongoose.Types.ObjectId) : null;
+    return doc ? doc.userId : null;
 }
 
 export async function findUserIdByOAuth(
     provider: 'google' | 'github',
     providerId: string,
-): Promise<mongoose.Types.ObjectId | null> {
+): Promise<string | null> {
     const doc = await UserIdentityIndex.findOne({ key: oauthKey(provider, providerId) }).lean();
     if (!doc) return null;
-    return doc.userId as mongoose.Types.ObjectId;
+    return doc.userId;
 }
 
-export async function releaseUserIdentityIndexes(userId: mongoose.Types.ObjectId): Promise<void> {
+export async function releaseUserIdentityIndexes(userId: string): Promise<void> {
     await UserIdentityIndex.deleteMany({ userId });
 }
 

@@ -1,5 +1,5 @@
-import mongoose from 'mongoose';
-import { config } from '../config';
+import { connectDatabase, disconnectDatabase } from '../config/database';
+import { pool } from '../db/client';
 import { User } from '../models/User';
 
 const randomPassages = [
@@ -22,24 +22,12 @@ const randomPassages = [
 
 const cleanupUsers = async (): Promise<void> => {
     try {
-        // Connect to MongoDB
-        await mongoose.connect(config.mongodb.uri);
-        console.log('✅ Connected to MongoDB');
+        await connectDatabase();
+        console.log('✅ Connected to PostgreSQL');
 
-        const db = mongoose.connection.db;
-        if (!db) {
-            throw new Error('Database connection not available');
-        }
-
-        const dbName = db.databaseName;
-        console.log(`📦 Database: ${dbName}`);
-        console.log(`📋 Collection: users\n`);
-
-        // Find all users
         const allUsers = await User.find({});
         console.log(`📊 Total users found: ${allUsers.length}`);
 
-        // Find user with email containing "mmk605"
         const targetUser = await User.findOne({
             email: { $regex: /mmk605/i }
         });
@@ -48,10 +36,9 @@ const cleanupUsers = async (): Promise<void> => {
             console.log('⚠️  No user found with email containing "mmk605"');
             console.log('📧 Available emails:');
             allUsers.forEach(u => console.log(`   - ${u.email}`));
-            
-            // Ask if we should create one or exit
+
             console.log('\n❌ Cannot proceed without target user. Exiting...');
-            await mongoose.connection.close();
+            await disconnectDatabase();
             process.exit(1);
         }
 
@@ -59,7 +46,6 @@ const cleanupUsers = async (): Promise<void> => {
         console.log(`   Display Name: ${targetUser.displayName}`);
         console.log(`   ID: ${targetUser._id}\n`);
 
-        // Add random passage/bio if not exists
         if (!targetUser.bio) {
             const randomPassage = randomPassages[Math.floor(Math.random() * randomPassages.length)];
             targetUser.bio = randomPassage;
@@ -69,17 +55,14 @@ const cleanupUsers = async (): Promise<void> => {
             console.log(`📝 User already has bio:\n   "${targetUser.bio}"\n`);
         }
 
-        // Store target user ID
         const targetUserId = targetUser._id;
 
-        // Delete all other users
         const deleteResult = await User.deleteMany({
             _id: { $ne: targetUserId }
         });
 
         console.log(`🗑️  Deleted ${deleteResult.deletedCount} user(s)`);
 
-        // Verify only target user remains
         const remainingUsers = await User.find({});
         console.log(`\n✅ Remaining users: ${remainingUsers.length}`);
         remainingUsers.forEach(u => {
@@ -89,7 +72,6 @@ const cleanupUsers = async (): Promise<void> => {
             }
         });
 
-        // Add random passages to any remaining users (should only be target user)
         for (const user of remainingUsers) {
             if (!user.bio) {
                 const randomPassage = randomPassages[Math.floor(Math.random() * randomPassages.length)];
@@ -100,19 +82,15 @@ const cleanupUsers = async (): Promise<void> => {
         }
 
         console.log('\n✅ Cleanup completed successfully!');
-        console.log(`\n📌 Database: ${dbName}`);
-        console.log(`📌 Collection: users`);
         console.log(`📌 Remaining user: ${targetUser.email}`);
 
-        await mongoose.connection.close();
+        await disconnectDatabase();
         console.log('\n✅ Connection closed');
         process.exit(0);
     } catch (error) {
         console.error('❌ Error:', error);
-        await mongoose.connection.close();
         process.exit(1);
     }
 };
 
 cleanupUsers();
-

@@ -6,6 +6,30 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## Unreleased
 
+### Added
+
+- Local (process-local) Redis circuit breaker + dependency health monitor across all three
+  services, per `requirements.md` §2–§28:
+  - `gateway-edge/rust-ext/src/redis_cb.rs` — fast + statistical detectors, rolling
+    p99/error/timeout window, hysteresis, recovery jitter, HALF_OPEN probes, concurrency cap;
+    wired into rate-limit and cache lookups, `/health` `redis_circuit`, `/metrics` `redis_*`.
+  - `gateway-control-plane/src/redis_cb.rs` — same design; protects admin-nonce de-dupe and
+    revocation-key writes with bounded timeouts (`CP_REDIS_TIMEOUT_MS`, default 1000ms, clamp
+    50–5000), `/health` `redis_circuit`, `/metrics` `redis_*`.
+  - `uam-backend/src/config/redisCircuitBreaker.ts` — same design (`REDIS_CB_*` env vars);
+    all cache + rate-limit Redis commands route through the breaker, `/metrics` `uam_redis_*`,
+    fail-closed rate limiting, fail-open cache, login limiter 503 in production when degraded.
+- Prometheus metrics for Redis dependency health: `redis_*` (edge/control-plane) and
+  `uam_redis_*` (uam-backend): requests/success/errors/timeouts, circuit open/half-open/
+  rejected totals, state, in-flight, rolling p99, rolling error rate.
+- Control plane durable config store (`gateway-control-plane/src/store.rs`): config
+  revisions + audit trail persisted to Postgres in an isolated `control_plane` schema
+  (ADR-0011 — the control plane's OWN operational state, never uam-backend's `public`
+  user schema). Durable-first `POST /config` / `POST /config/rollback` (mutation
+  rejected 503 if the write fails), boot-time history restore so rollback survives
+  restarts, `GET /config/history` from Postgres, new `GET /config/audit`, `/health`
+  `postgres` field. Hot-path `GET /config` stays on ArcSwap (~2 ns).
+
 ### Fixed
 
 - UAM rate limiters: Redis store initialization, distinct per-limiter Redis prefixes, dev/test

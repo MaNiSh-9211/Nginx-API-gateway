@@ -1,5 +1,4 @@
-import mongoose from 'mongoose';
-import { config } from '../config';
+import { connectDatabase, disconnectDatabase } from '../config/database';
 import { User } from '../models/User';
 
 /**
@@ -7,20 +6,9 @@ import { User } from '../models/User';
  */
 const verifyMigrationCleared = async (): Promise<void> => {
     try {
-        // Connect to MongoDB
-        await mongoose.connect(config.mongodb.uri);
-        console.log('✅ Connected to MongoDB');
+        await connectDatabase();
+        console.log('✅ Connected to PostgreSQL');
 
-        const db = mongoose.connection.db;
-        if (!db) {
-            throw new Error('Database connection not available');
-        }
-
-        const dbName = db.databaseName;
-        console.log(`📦 Database: ${dbName}`);
-        console.log(`📋 Collection: users\n`);
-
-        // Find all users with ANY migration data
         const usersWithMigration = await User.find({
             $or: [
                 { previousEmail: { $exists: true, $ne: null } },
@@ -64,19 +52,16 @@ const verifyMigrationCleared = async (): Promise<void> => {
             }
         }
 
-        // Also check all users to see their current state
         const allUsers = await User.find({});
         console.log(`\n📊 Total users in database: ${allUsers.length}`);
-        
-        await mongoose.connection.close();
+
+        await disconnectDatabase();
         console.log('\n✅ Connection closed');
         process.exit(usersWithMigration.length === 0 ? 0 : 1);
     } catch (error) {
         console.error('❌ Error:', error);
-        await mongoose.connection.close();
         process.exit(1);
     }
 };
 
 verifyMigrationCleared();
-

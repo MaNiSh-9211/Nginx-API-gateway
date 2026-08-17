@@ -1,7 +1,6 @@
 /**
  * Track issued access-token JTIs and persist refresh tokens for session lifecycle.
  */
-import mongoose from 'mongoose';
 import { User } from '../models/User';
 import { cacheSet, cacheGet, isRedisAvailable } from '../config/redis';
 import { revokeByJti } from './revoke.service';
@@ -32,13 +31,13 @@ export function extractAccessJti(accessToken: string): string | undefined {
 
 /** Publish the user's current token version so the gateway can reject stale JWTs. */
 export async function publishTokenVersion(
-    userId: mongoose.Types.ObjectId | string,
+    userId: string,
     version: number,
 ): Promise<boolean> {
     if (!isRedisAvailable()) {
         return false;
     }
-    const key = `${TV_REDIS_PREFIX}${userId.toString()}`;
+    const key = `${TV_REDIS_PREFIX}${userId}`;
     await cacheSet(key, String(version));
     const stored = await cacheGet(key);
     return stored === String(version);
@@ -46,7 +45,7 @@ export async function publishTokenVersion(
 
 /** Invalidate every session — used on refresh-token reuse detection and account compromise. */
 export async function invalidateAllSessions(
-    userId: mongoose.Types.ObjectId | string,
+    userId: string,
 ): Promise<void> {
     const user = await User.findById(userId).select('+refreshTokens +activeAccessJtis');
     if (!user) return;
@@ -62,7 +61,7 @@ export async function invalidateAllSessions(
 
 /** Atomically rotate refresh token + track access JTI (refresh flow). */
 export async function rotateSessionTokens(
-    userId: mongoose.Types.ObjectId | string,
+    userId: string,
     oldRefreshToken: string,
     accessToken: string,
     refreshToken: string,
@@ -96,7 +95,7 @@ export async function rotateSessionTokens(
 }
 
 export async function persistSessionTokens(
-    userId: mongoose.Types.ObjectId | string,
+    userId: string,
     accessToken: string,
     refreshToken: string,
     tokenVersion?: number,
@@ -122,7 +121,7 @@ export async function persistSessionTokens(
 
 /** Remove a single refresh token (logout). */
 export async function removeRefreshToken(
-    userId: mongoose.Types.ObjectId | string,
+    userId: string,
     refreshToken: string,
 ): Promise<void> {
     const user = await User.findById(userId).select('+refreshTokens');

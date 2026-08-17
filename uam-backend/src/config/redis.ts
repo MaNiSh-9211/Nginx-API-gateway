@@ -1,5 +1,10 @@
 import Redis, { RedisOptions } from 'ioredis';
 import { config } from './index';
+import {
+    redisCircuitBreaker,
+    withCircuitBreaker,
+    RedisCallOutcome,
+} from './redisCircuitBreaker';
 
 type RedisRole = 'cache' | 'ratelimit';
 
@@ -140,22 +145,14 @@ export const closeRedis = async (): Promise<void> => {
 
 export const pingRedisCache = async (): Promise<boolean> => {
     if (!redisCache || !cacheReady) return false;
-    try {
-        const pong = await redisCache.ping();
-        return pong === 'PONG';
-    } catch {
-        return false;
-    }
+    const res = await withCircuitBreaker(redisCircuitBreaker, () => redisCache!.ping());
+    return res.ok && res.value === 'PONG';
 };
 
 export const pingRedisRateLimit = async (): Promise<boolean> => {
     if (!redisRateLimit || !rateLimitReady) return false;
-    try {
-        const pong = await redisRateLimit.ping();
-        return pong === 'PONG';
-    } catch {
-        return false;
-    }
+    const res = await withCircuitBreaker(redisCircuitBreaker, () => redisRateLimit!.ping());
+    return res.ok && res.value === 'PONG';
 };
 
 export const isRedisAvailable = (): boolean => {
@@ -166,33 +163,50 @@ export const isRedisRateLimitAvailable = (): boolean => {
     return config.redis.enabled && rateLimitReady && redisRateLimit !== null;
 };
 
+/**
+ * Run a cache-pool Redis command under circuit-breaker protection. On
+ * `CIRCUIT_OPEN` / `CONCURRENCY_REJECTED` the breaker rejects immediately
+ * without contacting Redis; the caller applies its own degradation policy.
+ */
+export const runCacheCommand = <T>(
+    fn: () => Promise<T>,
+): Promise<{ ok: true; value: T } | { ok: false; outcome: RedisCallOutcome }> => {
+    return withCircuitBreaker(redisCircuitBreaker, fn);
+};
+
+/**
+ * Run a rate-limit-pool Redis command under circuit-breaker protection
+ * (used by express-rate-limit's RedisStore sendCommand).
+ */
+export const runRateLimitCommand = <T>(
+    fn: () => Promise<T>,
+): Promise<{ ok: true; value: T } | { ok: false; outcome: RedisCallOutcome }> => {
+    return withCircuitBreaker(redisCircuitBreaker, fn);
+};
+
 export const cacheSet = async (key: string, value: string, ttlSeconds?: number): Promise<void> => {
     if (!isRedisAvailable() || !redisCache) return;
-    try {
+    const res = await runCacheCommand(() => {
         if (ttlSeconds) {
-            await redisCache.setex(key, ttlSeconds, value);
-        } else {
-            await redisCache.set(key, value);
+            return redisCache!.setex(key, ttlSeconds, value);
         }
-    } catch {
-        // Redis is an optional acceleration layer for some paths.
+        return redisCache!.set(key, value);
+    });
+    if (!res.ok) {
+        // Redis is an optional acceleration layer for some paths — fail-open.
     }
 };
 
 export const cacheGet = async (key: string): Promise<string | null> => {
     if (!isRedisAvailable() || !redisCache) return null;
-    try {
-        return await redisCache.get(key);
-    } catch {
-        return null;
-    }
+    const res = await runCacheCommand(() => redisCache!.get(key));
+    return res.ok ? res.value : null;
 };
 
 export const cacheDel = async (key: string): Promise<void> => {
     if (!isRedisAvailable() || !redisCache) return;
-    try {
-        await redisCache.del(key);
-    } catch {
+    const res = await runCacheCommand(() => redisCache!.del(key));
+    if (!res.ok) {
         // best-effort
     }
 };

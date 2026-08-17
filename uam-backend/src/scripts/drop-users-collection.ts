@@ -1,62 +1,46 @@
-import mongoose from 'mongoose';
-import { config } from '../config';
+import { connectDatabase, disconnectDatabase } from '../config/database';
+import { pool } from '../db/client';
 
+/**
+ * Drops the users and user_identity_indexes tables (dangerous — deletes all data).
+ * Replaces the old Mongo "drop users collection" script.
+ */
 const dropUsersCollection = async (): Promise<void> => {
     try {
-        // Connect to MongoDB
-        await mongoose.connect(config.mongodb.uri);
-        console.log('✅ Connected to MongoDB');
+        await connectDatabase();
+        console.log('✅ Connected to PostgreSQL');
 
-        const db = mongoose.connection.db;
-        if (!db) {
-            throw new Error('Database connection not available');
-        }
+        const tables = ['users', 'user_identity_indexes'];
+        console.log('\n📋 Available tables:');
+        const { rows } = await pool.query(
+            `SELECT table_name FROM information_schema.tables
+             WHERE table_schema = 'public' ORDER BY table_name`,
+        );
+        rows.forEach(r => console.log(`  - ${r.table_name}`));
 
-        // Get the database name from the connection
-        const dbName = db.databaseName;
-        console.log(`📦 Database: ${dbName}`);
-
-        // List all collections
-        const collections = await db.listCollections().toArray();
-        console.log('\n📋 Available collections:');
-        collections.forEach(col => console.log(`  - ${col.name}`));
-
-        // Drop users collection
-        const usersCollection = db.collection('users');
-        const collectionExists = collections.some(col => col.name === 'users');
-
-        if (collectionExists) {
-            await usersCollection.drop();
-            console.log('\n✅ Successfully dropped "users" collection');
-        } else {
-            console.log('\n⚠️  "users" collection does not exist');
-        }
-
-        // Also try to drop from inventory-management database if it exists
-        try {
-            const inventoryDb = mongoose.connection.getClient().db('inventory-management');
-            const inventoryCollections = await inventoryDb.listCollections().toArray();
-            const inventoryUsersExists = inventoryCollections.some((col: { name: string }) => col.name === 'users');
-            
-            if (inventoryUsersExists) {
-                await inventoryDb.collection('users').drop();
-                console.log('✅ Successfully dropped "users" collection from inventory-management database');
+        let dropped = 0;
+        for (const table of tables) {
+            const exists = rows.some(r => r.table_name === table);
+            if (exists) {
+                await pool.query(`DROP TABLE IF EXISTS "${table}" CASCADE`);
+                console.log(`\n✅ Successfully dropped "${table}" table`);
+                dropped += 1;
             } else {
-                console.log('ℹ️  No "users" collection in inventory-management database');
+                console.log(`\n⚠️  "${table}" table does not exist`);
             }
-        } catch (err) {
-            console.log('ℹ️  Could not access inventory-management database (this is normal if it doesn\'t exist)');
         }
 
-        await mongoose.connection.close();
+        if (dropped === 0) {
+            console.log('\n⚠️  No tables dropped.');
+        }
+
+        await disconnectDatabase();
         console.log('\n✅ Connection closed');
         process.exit(0);
     } catch (error) {
         console.error('❌ Error:', error);
-        await mongoose.connection.close();
         process.exit(1);
     }
 };
 
 dropUsersCollection();
-

@@ -1,6 +1,6 @@
 import rateLimit, { type Store } from 'express-rate-limit';
 import { RedisStore } from 'rate-limit-redis';
-import { redisRateLimit, isRedisRateLimitAvailable } from '../config/redis';
+import { redisRateLimit, isRedisRateLimitAvailable, runRateLimitCommand } from '../config/redis';
 import { config } from '../config/index';
 import { rateLimitConfig } from '../config/rateLimit.config';
 
@@ -32,7 +32,22 @@ const getStore = (prefix: string): Store | undefined => {
         return new RedisStore({
             prefix,
             // @ts-ignore - ioredis call signature matches what rate-limit-redis expects
-            sendCommand: (...args: string[]) => redisRateLimit.call(...args),
+            sendCommand: (...args: string[]): Promise<unknown> => {
+                // Route through the local Redis circuit breaker. When the
+                // circuit is OPEN/slow the breaker rejects immediately and we
+                // fail closed (request errors) rather than buffering commands
+                // against a degraded dependency (§17). The command is created
+                // inside the callback so an OPEN circuit never dispatches it.
+                return runRateLimitCommand<unknown>(() => {
+                    // @ts-ignore - ioredis call signature matches what rate-limit-redis expects
+                    return redisRateLimit!.call(...args);
+                }).then((res) => {
+                    if (!res.ok) {
+                        throw new Error(`redis circuit ${res.outcome}`);
+                    }
+                    return res.value;
+                });
+            },
         });
     }
 

@@ -1,5 +1,4 @@
-import mongoose from 'mongoose';
-import { config } from '../config';
+import { connectDatabase, disconnectDatabase } from '../config/database';
 import { User } from '../models/User';
 
 /**
@@ -8,38 +7,26 @@ import { User } from '../models/User';
  */
 const fixMigrationBio = async (): Promise<void> => {
     try {
-        // Connect to MongoDB
-        await mongoose.connect(config.mongodb.uri);
-        console.log('✅ Connected to MongoDB');
+        await connectDatabase();
+        console.log('✅ Connected to PostgreSQL');
 
-        const db = mongoose.connection.db;
-        if (!db) {
-            throw new Error('Database connection not available');
-        }
-
-        const dbName = db.databaseName;
-        console.log(`📦 Database: ${dbName}`);
-        console.log(`📋 Collection: users\n`);
-
-        // Find user with old email (manish1217.be22@chitkarauniversity.edu.in)
-        const oldUser = await User.findOne({ 
-            email: 'manish1217.be22@chitkarauniversity.edu.in' 
+        const oldUser = await User.findOne({
+            email: 'manish1217.be22@chitkarauniversity.edu.in'
         });
 
-        // Find user with new email (at38157@gmail.com)
-        const newUser = await User.findOne({ 
-            email: 'at38157@gmail.com' 
+        const newUser = await User.findOne({
+            email: 'at38157@gmail.com'
         });
 
         if (!oldUser) {
             console.log('❌ Old user not found');
-            await mongoose.connection.close();
+            await disconnectDatabase();
             process.exit(1);
         }
 
         if (!newUser) {
             console.log('❌ New user not found');
-            await mongoose.connection.close();
+            await disconnectDatabase();
             process.exit(1);
         }
 
@@ -54,11 +41,9 @@ const fixMigrationBio = async (): Promise<void> => {
         console.log(`   ID: ${newUser._id}`);
         console.log(`   Previous Email: ${newUser.previousEmail || 'None'}`);
 
-        // Check if new user has previousEmail matching old user
         if (newUser.previousEmail === oldUser.email) {
             console.log(`\n✅ Migration detected: ${oldUser.email} -> ${newUser.email}`);
-            
-            // If new user doesn't have bio but old user does, copy it
+
             if (!newUser.bio && oldUser.bio) {
                 console.log(`\n🔄 Copying bio from old account to new account...`);
                 newUser.bio = oldUser.bio;
@@ -74,15 +59,13 @@ const fixMigrationBio = async (): Promise<void> => {
             console.log(`\n⚠️  No migration relationship found between these accounts`);
         }
 
-        await mongoose.connection.close();
+        await disconnectDatabase();
         console.log('\n✅ Connection closed');
         process.exit(0);
     } catch (error) {
         console.error('❌ Error:', error);
-        await mongoose.connection.close();
         process.exit(1);
     }
 };
 
 fixMigrationBio();
-

@@ -5,7 +5,6 @@
  * reveals whether the account is verified. Public email lookups always return false.
  */
 import crypto from 'crypto';
-import mongoose from 'mongoose';
 import { cacheDel, cacheGet, cacheSet, isRedisAvailable } from '../config/redis';
 import { config } from '../config';
 
@@ -23,7 +22,7 @@ function pruneMemoryPolls(): void {
 }
 
 export async function createVerificationPollToken(
-    userId: mongoose.Types.ObjectId | string,
+    userId: string,
 ): Promise<string> {
     const token = crypto.randomBytes(POLL_BYTES).toString('hex');
     const id = userId.toString();

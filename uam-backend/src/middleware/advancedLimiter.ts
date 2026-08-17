@@ -1,5 +1,5 @@
 import { NextFunction, Request, Response } from 'express';
-import { redis, isRedisAvailable } from '../config/redis';
+import { redis, isRedisAvailable, runCacheCommand } from '../config/redis';
 import { config } from '../config/index';
 import { rateLimitConfig } from '../config/rateLimit.config';
 
@@ -19,6 +19,11 @@ function rejectDistributedLimitUnavailable(res: Response): void {
 
 /**
  * Advanced Login Limiter with Exponential Backoff
+ *
+ * Every Redis interaction runs through the local circuit breaker. When the
+ * breaker rejects (CIRCUIT_OPEN / CONCURRENCY_REJECTED) this limiter applies
+ * its existing degradation policy: fail-closed 503 in production
+ * (`requireDistributed`), in-memory fallback otherwise.
  */
 export const advancedLoginLimiter = async (req: Request, res: Response, next: NextFunction) => {
     const ip = req.ip;
@@ -30,8 +35,15 @@ export const advancedLoginLimiter = async (req: Request, res: Response, next: Ne
         let record = { count: 0, blockUntil: 0 };
 
         if (isRedisAvailable() && redis) {
-            const data = await redis.get(key);
-            if (data) record = JSON.parse(data);
+            const result = await runCacheCommand<string | null>(() => redis!.get(key));
+            if (result.ok && result.value) {
+                record = JSON.parse(result.value);
+            } else if (!result.ok && redisRequiredForLoginLimit()) {
+                // Circuit open / concurrency limit in production — fail closed.
+                rejectDistributedLimitUnavailable(res);
+                return;
+            }
+            // result.ok === false and not required → fail-open with empty record
         } else if (redisRequiredForLoginLimit()) {
             rejectDistributedLimitUnavailable(res);
             return;
@@ -85,22 +97,31 @@ export const handleLoginFailure = async (req: Request) => {
     const key = (req as any).rateLimitKey;
     if (!key) return;
 
-    const config = rateLimitConfig.login;
+    const cfg = rateLimitConfig.login;
     let count = ((req as any).currentAttempts || 0) + 1;
     let blockUntil = 0;
 
     // Exponential Backoff Logic
-    if (count > config.allowedAttempts) {
-        if (count === config.allowedAttempts + 1) blockUntil = Date.now() + config.blockDuration.step1;
-        else if (count === config.allowedAttempts + 2) blockUntil = Date.now() + config.blockDuration.step2;
-        else blockUntil = Date.now() + config.blockDuration.step3;
+    if (count > cfg.allowedAttempts) {
+        if (count === cfg.allowedAttempts + 1) blockUntil = Date.now() + cfg.blockDuration.step1;
+        else if (count === cfg.allowedAttempts + 2) blockUntil = Date.now() + cfg.blockDuration.step2;
+        else blockUntil = Date.now() + cfg.blockDuration.step3;
     }
 
     const data = JSON.stringify({ count, blockUntil });
 
     if (isRedisAvailable() && redis) {
-        const ttl = Math.ceil(config.blockDuration.step3 / 1000) + 600;
-        await redis.setex(key, ttl, data);
+        const ttl = Math.ceil(cfg.blockDuration.step3 / 1000) + 600;
+        const result = await runCacheCommand<string>(() => redis!.setex(key, ttl, data));
+        if (!result.ok) {
+            // Circuit open / concurrency limit. Preserve prior degradation:
+            // production fails closed (no memory fallback), dev falls back to
+            // the in-memory store.
+            if (redisRequiredForLoginLimit()) {
+                return null;
+            }
+            memoryStore[key] = { count, resetTime: 0, blockUntil };
+        }
     } else if (redisRequiredForLoginLimit()) {
         return null;
     } else {
@@ -119,7 +140,10 @@ export const resetLoginAttempts = async (req: Request) => {
     if (!key) return;
 
     if (isRedisAvailable() && redis) {
-        await redis.del(key);
+        const result = await runCacheCommand<number>(() => redis!.del(key));
+        if (!result.ok && !redisRequiredForLoginLimit()) {
+            delete memoryStore[key];
+        }
     } else {
         delete memoryStore[key];
     }

@@ -26,3 +26,8 @@ sha2        = "0.10.8"
 hex         = "0.4.3"
 # Redis — token revocation publisher (ADR-0038, ADR-0039)
 redis       = { version = "0.24", features = ["tls-native-tls"] }
+# PostgreSQL — control-plane owned state store (config revisions + audit trail).
+# The control plane is a management plane: its config/audit data is its OWN
+# operational state (ADR-0011), NOT uam-backend's user data. It writes to a
+# dedicated, isolated `control_plane` schema only (least-privilege role).
+sqlx        = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "tls-native-tls", "time", "json"] }

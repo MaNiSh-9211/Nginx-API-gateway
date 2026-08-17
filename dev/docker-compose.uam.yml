@@ -20,7 +20,7 @@
 services:
 
   # High-assurance defaults when UAM is enabled (ADR-0022, ADR-0057).
-  gateway:
+  gateway-edge:
     environment:
       - REVOCATION_FAIL_CLOSED=1
 
@@ -171,7 +171,7 @@ services:
     networks:
       - internal
     depends_on:
-      gateway:
+      gateway-edge:
         condition: service_healthy
       uam-backend:
         condition: service_healthy

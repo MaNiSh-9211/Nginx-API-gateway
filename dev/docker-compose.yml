@@ -104,6 +104,26 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
+  # ── Config Sidecar (Rust / Push Daemon) ────────────────────────────────────
+  config-sidecar:
+    build:
+      context: ../gateway-sidecar
+      dockerfile: Dockerfile
+    image: config-sidecar:latest
+    networks:
+      - internal
+    environment:
+      CONTROL_PLANE_URL: http://control-plane:8081
+      GATEWAY_CONFIG_PATH: /etc/gateway/config.json
+      CONFIG_POLL_SECS: "5"
+      CONFIG_READ_TOKEN: ${CONFIG_READ_TOKEN}
+      METRICS_PORT: "9092"
+    depends_on:
+      control-plane:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging
+
   # ── UAM Backend (Node / Express) ────────────────────────────────────────────
   uam-backend:
     build:
@@ -240,6 +260,22 @@ services:
       timeout: 3s
       retries: 5
       start_period: 3s
+    restart: unless-stopped
+    logging: *default-logging
+
+  # ── Redis (Cache, Revocations, Rate Limit Sync) ────────────────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    networks:
+      - internal
+    command: redis-server --appendonly yes --requirepass "${REDIS_PASSWORD:-}"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     restart: unless-stopped
     logging: *default-logging
 

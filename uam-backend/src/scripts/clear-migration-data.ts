@@ -1,5 +1,4 @@
-import mongoose from 'mongoose';
-import { config } from '../config';
+import { connectDatabase, disconnectDatabase } from '../config/database';
 import { User } from '../models/User';
 
 /**
@@ -20,20 +19,9 @@ import { User } from '../models/User';
  */
 const clearMigrationData = async (): Promise<void> => {
     try {
-        // Connect to MongoDB
-        await mongoose.connect(config.mongodb.uri);
-        console.log('✅ Connected to MongoDB');
+        await connectDatabase();
+        console.log('✅ Connected to PostgreSQL');
 
-        const db = mongoose.connection.db;
-        if (!db) {
-            throw new Error('Database connection not available');
-        }
-
-        const dbName = db.databaseName;
-        console.log(`📦 Database: ${dbName}`);
-        console.log(`📋 Collection: users\n`);
-
-        // Find all users with migration data
         const usersWithMigration = await User.find({
             $or: [
                 { previousEmail: { $exists: true, $ne: null } },
@@ -55,16 +43,14 @@ const clearMigrationData = async (): Promise<void> => {
 
         if (usersWithMigration.length === 0) {
             console.log('✅ No migration data to clear');
-            await mongoose.connection.close();
+            await disconnectDatabase();
             process.exit(0);
         }
 
-        // Clear migration data from all users
         let clearedCount = 0;
         for (const user of usersWithMigration) {
             console.log(`🧹 Clearing migration data for user: ${user.email}`);
-            
-            // Show what migration data exists
+
             if (user.previousEmail) console.log(`   - Previous Email: ${user.previousEmail}`);
             if (user.migrationExpiry) console.log(`   - Migration Expiry: ${user.migrationExpiry}`);
             if (user.newEmailPending) console.log(`   - New Email Pending: ${user.newEmailPending}`);
@@ -72,7 +58,6 @@ const clearMigrationData = async (): Promise<void> => {
                 console.log(`   - Migration History: ${user.migrationHistory.length} entry/entries`);
             }
 
-            // Clear all migration fields
             user.previousEmail = undefined;
             user.migrationExpiry = undefined;
             user.migrationToken = undefined;
@@ -93,18 +78,14 @@ const clearMigrationData = async (): Promise<void> => {
 
         console.log(`\n✅ Migration data cleanup completed!`);
         console.log(`   Cleared migration data from ${clearedCount} user(s)`);
-        console.log(`\n📋 Collection: users`);
-        console.log(`📦 Database: ${dbName}`);
 
-        await mongoose.connection.close();
+        await disconnectDatabase();
         console.log('\n✅ Connection closed');
         process.exit(0);
     } catch (error) {
         console.error('❌ Error:', error);
-        await mongoose.connection.close();
         process.exit(1);
     }
 };
 
 clearMigrationData();
-

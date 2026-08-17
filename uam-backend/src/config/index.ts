@@ -14,22 +14,18 @@ export const config = {
     port: parseInt(process.env.PORT || '8080', 10),
     nodeEnv: process.env.NODE_ENV || 'development',
 
-    mongodb: {
-        uri: process.env.MONGODB_URI || 'mongodb://localhost:27017/uam',
-        /** Driver connection pool — one pool per Node process (ADR production defaults). */
+    postgres: {
+        url: process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/uam',
+        ssl:
+            process.env.PG_SSL === '1'
+            || process.env.PG_SSL === 'true',
         pool: {
-            maxPoolSize: envInt('MONGODB_MAX_POOL_SIZE', 50),
-            minPoolSize: envInt('MONGODB_MIN_POOL_SIZE', 5),
-            maxIdleTimeMS: envInt('MONGODB_MAX_IDLE_TIME_MS', 60_000),
-            waitQueueTimeoutMS: envInt('MONGODB_WAIT_QUEUE_TIMEOUT_MS', 10_000),
-            serverSelectionTimeoutMS: envInt('MONGODB_SERVER_SELECTION_TIMEOUT_MS', 5_000),
-            socketTimeoutMS: envInt('MONGODB_SOCKET_TIMEOUT_MS', 45_000),
-            connectTimeoutMS: envInt('MONGODB_CONNECT_TIMEOUT_MS', 10_000),
-            heartbeatFrequencyMS: envInt('MONGODB_HEARTBEAT_FREQUENCY_MS', 10_000),
-            retryWrites: envBool('MONGODB_RETRY_WRITES', true),
-            retryReads: envBool('MONGODB_RETRY_READS', true),
-            appName: process.env.MONGODB_APP_NAME || 'uam-backend',
+            min: envInt('PG_POOL_MIN', 2),
+            max: envInt('PG_POOL_MAX', 10),
+            idleTimeoutMs: envInt('PG_IDLE_TIMEOUT_MS', 30_000),
+            connectTimeoutMs: envInt('PG_CONNECT_TIMEOUT_MS', 10_000),
         },
+        appName: process.env.PG_APP_NAME || 'uam-backend',
     },
 
     redis: {

@@ -25,6 +25,7 @@ use std::num::NonZeroUsize;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::config::GLOBAL_CONFIG;
+use crate::redis_cb::{with_circuit_breaker, classify_redis_error, RedisCallOutcome};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -112,41 +113,7 @@ fn token_version_matches(stored: Option<u64>, token_tv: Option<u64>) -> bool {
     }
 }
 
-fn check_token_version(user_id: &str, tv: Option<u64>) -> TokenVersionStatus {
-    let key = token_version_key(user_id);
 
-    REDIS_CONN.with(|cell| {
-        let mut guard = cell.borrow_mut();
-        for _attempt in 0..2 {
-            if guard.is_none() {
-                match open_redis_connection() {
-                    Some(c) => *guard = Some(c),
-                    None => return TokenVersionStatus::Unavailable,
-                }
-            }
-            let con = match guard.as_mut() {
-                Some(c) => c,
-                None => return TokenVersionStatus::Unavailable,
-            };
-            let result: redis::RedisResult<Option<String>> = redis::cmd("GET").arg(&key).query(con);
-            match result {
-                Ok(None) => return TokenVersionStatus::Valid,
-                Ok(Some(raw)) => {
-                    let stored = raw.parse::<u64>().unwrap_or(0);
-                    return if token_version_matches(Some(stored), tv) {
-                        TokenVersionStatus::Valid
-                    } else {
-                        TokenVersionStatus::Stale
-                    };
-                }
-                Err(_) => {
-                    *guard = None;
-                }
-            }
-        }
-        TokenVersionStatus::Unavailable
-    })
-}
 
 fn revocation_fail_closed() -> bool {
     std::env::var("REVOCATION_FAIL_CLOSED")
@@ -237,70 +204,134 @@ fn revocation_keys(token: &str, jti: Option<&str>) -> Vec<String> {
     keys
 }
 
-/// TCP connect timeout. Kept tight so a dead Redis never stalls the hot path.
-const REDIS_CONNECT_TIMEOUT: Duration = Duration::from_millis(50);
-/// Per-command read/write timeout. Must be non-zero (zero is an error in the
-/// redis crate's `set_*_timeout`).
-const REDIS_IO_TIMEOUT: Duration = Duration::from_millis(50);
+fn redis_timeout_ms() -> u64 {
+    std::env::var("REDIS_AUTH_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(|v| v.clamp(5, 1000))
+        .unwrap_or(50)
+}
 
 thread_local! {
     /// Per-worker persistent Redis connection for revocation lookups.
-    ///
-    /// Previously every cache miss did `Client::open` + a fresh TCP handshake,
-    /// then dropped the connection — connection churn that wastes a round trip
-    /// per request and can exhaust sockets/FDs under load. We keep one
-    /// connection per worker thread and reconnect only when a command fails.
     static REDIS_CONN: RefCell<Option<redis::Connection>> = const { RefCell::new(None) };
 }
 
-/// Establish a new Redis connection with bounded connect + I/O timeouts.
+/// Establish a new Redis connection with bounded connect + I/O timeouts (§14).
 fn open_redis_connection() -> Option<redis::Connection> {
+    let timeout = Duration::from_millis(redis_timeout_ms());
     let client = redis::Client::open(redis_url().as_str()).ok()?;
     let con = client
-        .get_connection_with_timeout(REDIS_CONNECT_TIMEOUT)
+        .get_connection_with_timeout(timeout)
         .ok()?;
-    // Bound every command so a hung server can't block the request thread.
-    let _ = con.set_read_timeout(Some(REDIS_IO_TIMEOUT));
-    let _ = con.set_write_timeout(Some(REDIS_IO_TIMEOUT));
+    // Bound every command so a hung server can't block the request thread (§14).
+    let _ = con.set_read_timeout(Some(timeout));
+    let _ = con.set_write_timeout(Some(timeout));
     Some(con)
+}
+
+fn check_token_version(user_id: &str, tv: Option<u64>) -> TokenVersionStatus {
+    let key = token_version_key(user_id);
+
+    let result = with_circuit_breaker(|| {
+        REDIS_CONN.with(|cell| {
+            let mut guard = cell.borrow_mut();
+            for attempt in 0..2 {
+                if attempt > 0 {
+                    // §16, §21 — Bounded backoff + jitter to prevent retry storms
+                    let jitter_ms = (std::process::id() as u64 + attempt as u64) % 5;
+                    std::thread::sleep(Duration::from_millis(2 + jitter_ms));
+                }
+                if guard.is_none() {
+                    match open_redis_connection() {
+                        Some(c) => *guard = Some(c),
+                        None    => return Err(RedisCallOutcome::RedisError),
+                    }
+                }
+                let con = match guard.as_mut() {
+                    Some(c) => c,
+                    None    => return Err(RedisCallOutcome::RedisError),
+                };
+                let r: redis::RedisResult<Option<String>> =
+                    redis::cmd("GET").arg(&key).query(con);
+                match r {
+                    Ok(val)  => return Ok(val),
+                    Err(e)   => {
+                        *guard = None;
+                        let outcome = classify_redis_error(&e);
+                        // §16 — Do not retry on explicit timeout
+                        if outcome == RedisCallOutcome::Timeout {
+                            return Err(outcome);
+                        }
+                    }
+                }
+            }
+            Err(RedisCallOutcome::RedisError)
+        })
+    });
+
+    match result {
+        Ok(None)        => TokenVersionStatus::Valid,
+        Ok(Some(raw))   => {
+            let stored = raw.parse::<u64>().unwrap_or(0);
+            if token_version_matches(Some(stored), tv) {
+                TokenVersionStatus::Valid
+            } else {
+                TokenVersionStatus::Stale
+            }
+        }
+        Err(_) => TokenVersionStatus::Unavailable,
+    }
 }
 
 /// Check if a token is in the Redis revocation list.
 /// Called on every cache miss — never on cache hit (performance).
-///
-/// Uses a single `EXISTS k1 k2 ...` round trip (O(1) per key, one RTT) so the
-/// jti-based and token-hash keys are both consulted without extra latency, over
-/// a reused per-worker connection. On a command error the connection is dropped
-/// and re-established exactly once (handles Redis restarts / idle drops).
+/// Wrapped with the circuit breaker: if Redis is OPEN/slow/down, returns
+/// Unavailable immediately without attempting the network call (§17).
 fn check_revocation(token: &str, jti: Option<&str>) -> RevocationStatus {
     let keys = revocation_keys(token, jti);
 
-    REDIS_CONN.with(|cell| {
-        let mut guard = cell.borrow_mut();
-        for _attempt in 0..2 {
-            if guard.is_none() {
-                match open_redis_connection() {
-                    Some(c) => *guard = Some(c),
-                    None => return RevocationStatus::Unavailable, // can't connect
+    let result = with_circuit_breaker(|| {
+        REDIS_CONN.with(|cell| {
+            let mut guard = cell.borrow_mut();
+            for attempt in 0..2 {
+                if attempt > 0 {
+                    // §16, §21 — Bounded backoff + jitter to prevent retry storms
+                    let jitter_ms = (std::process::id() as u64 + attempt as u64) % 5;
+                    std::thread::sleep(Duration::from_millis(2 + jitter_ms));
+                }
+                if guard.is_none() {
+                    match open_redis_connection() {
+                        Some(c) => *guard = Some(c),
+                        None    => return Err(RedisCallOutcome::RedisError),
+                    }
+                }
+                let con = match guard.as_mut() {
+                    Some(c) => c,
+                    None    => return Err(RedisCallOutcome::RedisError),
+                };
+                let r: redis::RedisResult<i64> =
+                    redis::cmd("EXISTS").arg(&keys).query(con);
+                match r {
+                    Ok(count) => return Ok(count),
+                    Err(e)    => {
+                        let outcome = classify_redis_error(&e);
+                        *guard = None;
+                        if outcome == RedisCallOutcome::Timeout {
+                            return Err(RedisCallOutcome::Timeout);
+                        }
+                    }
                 }
             }
-            let con = match guard.as_mut() {
-                Some(c) => c,
-                None => return RevocationStatus::Unavailable,
-            };
-            let result: redis::RedisResult<i64> =
-                redis::cmd("EXISTS").arg(&keys).query(con);
-            match result {
-                Ok(0) => return RevocationStatus::NotRevoked,
-                Ok(_) => return RevocationStatus::Revoked,
-                Err(_) => {
-                    // Likely a broken/stale connection — drop and retry once.
-                    *guard = None;
-                }
-            }
-        }
-        RevocationStatus::Unavailable
-    })
+            Err(RedisCallOutcome::RedisError)
+        })
+    });
+
+    match result {
+        Ok(0) => RevocationStatus::NotRevoked,
+        Ok(_) => RevocationStatus::Revoked,
+        Err(_) => RevocationStatus::Unavailable,
+    }
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -566,8 +597,7 @@ mod tests {
     fn redis_timeouts_are_nonzero() {
         // The redis crate treats a zero Duration as an error in
         // set_read_timeout/set_write_timeout, so these must stay > 0.
-        assert!(!REDIS_CONNECT_TIMEOUT.is_zero());
-        assert!(!REDIS_IO_TIMEOUT.is_zero());
+        assert!(redis_timeout_ms() > 0);
     }
 
     #[test]
