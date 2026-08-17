@@ -15,7 +15,6 @@ strip         = true
 actix-web   = "4.13.0"
 serde       = { version = "1.0.228", features = ["derive"] }
 serde_json  = "1.0.149"
-env_logger  = "0.10.2"
 log         = "0.4.29"
 num_cpus    = "1.17.0"
 arc-swap    = "1.6.0"
@@ -31,3 +30,15 @@ redis       = { version = "0.24", features = ["tls-native-tls"] }
 # operational state (ADR-0011), NOT uam-backend's user data. It writes to a
 # dedicated, isolated `control_plane` schema only (least-privilege role).
 sqlx        = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "tls-native-tls", "time", "json"] }
+# OpenTelemetry → Grafana Cloud (LGTM) — OTLP/HTTP traces, metrics, logs.
+opentelemetry          = { version = "0.32", default-features = false, features = ["trace", "metrics", "logs"] }
+opentelemetry_sdk      = { version = "0.32", default-features = false, features = ["trace", "metrics", "logs", "rt-tokio"] }
+# reqwest-blocking-client selects the blocking HTTP client used by the SDK's
+# background exporter threads; reqwest-rustls additionally enables the TLS
+# backend (reqwest/default-tls) so HTTPS to Grafana Cloud works.
+opentelemetry-otlp     = { version = "0.32", default-features = false, features = ["http-proto", "trace", "metrics", "logs", "reqwest-blocking-client", "reqwest-rustls"] }
+tracing                = "0.1"
+tracing-subscriber     = { version = "0.3", features = ["env-filter", "registry"] }
+tracing-log            = { version = "0.2", features = ["log-tracer"] }
+tracing-opentelemetry  = "0.33"
+opentelemetry-appender-tracing = "0.32"

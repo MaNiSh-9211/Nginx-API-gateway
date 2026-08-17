@@ -100,6 +100,10 @@ services:
       context: ../uam-backend
       dockerfile: Dockerfile
     image: uam-backend:latest
+    # Loopback-only host port so k6 load tests (dev/tests/load_uam.js) and
+    # probes can hit the backend directly without going through the gateway.
+    ports:
+      - "127.0.0.1:${UAM_BACKEND_PORT:-18080}:8080"
     networks:
       - internal
     depends_on:

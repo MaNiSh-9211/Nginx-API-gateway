@@ -42,10 +42,23 @@
  *   TIMEOUT              - I/O or connect deadline exceeded
  *   CIRCUIT_OPEN         - circuit prevented the call (fast rejection)
  *   CONCURRENCY_REJECTED - too many Redis ops in flight (back-pressure)
+ *
+ * Retry behavior (§16): command retries are owned by ioredis (bounded,
+ * `REDIS_MAX_RETRIES_PER_REQUEST`, exponential backoff capped at 5s, reconnect
+ * attempts capped by `REDIS_MAX_RECONNECT_ATTEMPTS`). The breaker itself never
+ * retries; it re-allows probes after the cooldown.
+ *
+ * Known limitations / future work:
+ *   - §13 baseline-aware (relative) latency detection is NOT implemented;
+ *     absolute thresholds are used. Relative degradation is a future improvement.
+ *   - §24 distributed tracing (OpenTelemetry spans) is NOT implemented yet. When
+ *     the circuit is OPEN no fake Redis span is created; the planned LGTM stack
+ *     should record a circuit-open event instead.
  */
 
 export type CircuitState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
 
+import { otelLog } from '../otel';
 export type RedisCallOutcome =
     | 'SUCCESS'
     | 'REDIS_ERROR'
@@ -88,6 +101,15 @@ export interface CircuitBreakerConfig {
     recoverySuccesses: number;
     /** Max Redis operations in flight (concurrency protection). */
     maxInflight: number;
+    /** Max time HALF_OPEN may keep probing before re-arming OPEN (ms).
+     * Prevents a stuck HALF_OPEN wedge when probes succeed but recovery
+     * thresholds are not met (§18/§19). */
+    halfOpenMaxMs: number;
+    /** Breaker-level deadline for a single Redis operation (ms). If `fn` does
+     * not settle within this budget, the operation is treated as a TIMEOUT so
+     * inflight slots can never leak and the circuit keeps its health signal
+     * (§14). */
+    operationTimeoutMs: number;
 }
 
 export const defaultCircuitBreakerConfig = (): CircuitBreakerConfig => ({
@@ -105,6 +127,8 @@ export const defaultCircuitBreakerConfig = (): CircuitBreakerConfig => ({
     halfOpenProbes: intEnv('REDIS_CB_HALF_OPEN_PROBES', 3),
     recoverySuccesses: intEnv('REDIS_CB_RECOVERY_SUCCESSES', 3),
     maxInflight: intEnv('REDIS_CB_MAX_INFLIGHT', 32),
+    halfOpenMaxMs: intEnv('REDIS_CB_HALF_OPEN_MAX_MS', 10_000),
+    operationTimeoutMs: intEnv('REDIS_CB_OPERATION_TIMEOUT_MS', 5_000),
 });
 
 function intEnv(name: string, fallback: number): number {
@@ -121,9 +145,10 @@ function floatEnv(name: string, fallback: number): number {
     return Number.isFinite(n) ? n : fallback;
 }
 
-/** Clamp into the same safe ranges the Rust gateway uses. */
+/** Clamp into the same safe ranges the Rust gateway uses, then enforce
+ * cross-field invariants (§12). */
 function clampConfig(c: CircuitBreakerConfig): CircuitBreakerConfig {
-    return {
+    const clamped: CircuitBreakerConfig = {
         ...c,
         windowSecs: Math.min(60, Math.max(1, c.windowSecs)),
         minSamples: Math.min(1_000, Math.max(5, c.minSamples)),
@@ -139,7 +164,34 @@ function clampConfig(c: CircuitBreakerConfig): CircuitBreakerConfig {
         halfOpenProbes: Math.min(20, Math.max(1, c.halfOpenProbes)),
         recoverySuccesses: Math.min(20, Math.max(1, c.recoverySuccesses)),
         maxInflight: Math.min(10_000, Math.max(1, c.maxInflight)),
+        halfOpenMaxMs: Math.min(600_000, Math.max(1_000, c.halfOpenMaxMs)),
+        operationTimeoutMs: Math.min(60_000, Math.max(100, c.operationTimeoutMs)),
     };
+    // §12 — recovery_successes > half_open_probes would make recovery
+    // impossible; clamp it (with a warning) instead of silently breaking.
+    if (clamped.recoverySuccesses > clamped.halfOpenProbes) {
+        process.stderr.write(
+            `[redis_cb] WARN: REDIS_CB_RECOVERY_SUCCESSES (${clamped.recoverySuccesses}) ` +
+            `> REDIS_CB_HALF_OPEN_PROBES (${clamped.halfOpenProbes}); recovery would be ` +
+            `impossible — clamping to ${clamped.halfOpenProbes}\n`,
+        );
+        clamped.recoverySuccesses = clamped.halfOpenProbes;
+    }
+    if (clamped.p99UsRecovery >= clamped.p99UsOpen) {
+        process.stderr.write(
+            `[redis_cb] WARN: p99 recovery threshold (${clamped.p99UsRecovery}us) >= open ` +
+            `threshold (${clamped.p99UsOpen}us); hysteresis disabled — set ` +
+            `REDIS_CB_P99_US_RECOVERY below REDIS_CB_P99_US_OPEN\n`,
+        );
+    }
+    if (clamped.errorRateRecovery >= clamped.errorRateOpen) {
+        process.stderr.write(
+            `[redis_cb] WARN: error-rate recovery threshold (${clamped.errorRateRecovery}) ` +
+            `>= open threshold (${clamped.errorRateOpen}); hysteresis disabled — set ` +
+            `REDIS_CB_ERROR_RATE_RECOVERY below REDIS_CB_ERROR_RATE_OPEN\n`,
+        );
+    }
+    return clamped;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -220,8 +272,9 @@ class RollingWindow {
         if (outcome === 'REDIS_ERROR') {
             b.errors += 1;
         } else if (outcome === 'TIMEOUT') {
+            // §8 — timeouts are tracked separately from general errors so the
+            // error-rate and timeout-rate health signals stay independent.
             b.timeouts += 1;
-            b.errors += 1; // timeout is also an error
         }
     }
 
@@ -295,6 +348,7 @@ export class CircuitBreaker {
     private consecutiveTimeout = 0;
     private probesDispatched = 0;
     private halfOpenSuccesses = 0;
+    private halfOpenStartedAtMs = 0;
     private inflight = 0;
     private readonly window: RollingWindow;
 
@@ -322,6 +376,18 @@ export class CircuitBreaker {
 
     inflightCount(): number {
         return this.inflight;
+    }
+
+    /** p50 latency in microseconds from the rolling window (for metrics). */
+    p50Us(): number {
+        const stats = this.window.aggregate(this.config.windowSecs);
+        return percentileUs(stats, 50);
+    }
+
+    /** p95 latency in microseconds from the rolling window (for metrics). */
+    p95Us(): number {
+        const stats = this.window.aggregate(this.config.windowSecs);
+        return percentileUs(stats, 95);
     }
 
     /** p99 latency in microseconds from the rolling window (for metrics). */
@@ -357,8 +423,9 @@ export class CircuitBreaker {
                     this.state = 'HALF_OPEN';
                     this.probesDispatched = 0;
                     this.halfOpenSuccesses = 0;
+                    this.halfOpenStartedAtMs = Date.now();
                     this.circuitHalfOpenTotal += 1;
-                    console.log('[redis_cb] OPEN -> HALF_OPEN (cooldown elapsed)');
+                    otelLog('info', '[redis_cb] OPEN -> HALF_OPEN (cooldown elapsed)', { circuit: 'HALF_OPEN' });
                 }
                 return this.acquireHalfOpen();
             }
@@ -370,6 +437,18 @@ export class CircuitBreaker {
     }
 
     private acquireHalfOpen(): RedisCallOutcome | null {
+        // §18/§19 — HALF_OPEN must never wedge. If the circuit has been probing
+        // for `halfOpenMaxMs` without a confirmed recovery, re-arm OPEN with a
+        // fresh jittered cooldown so the fleet retries deliberately later.
+        // Current requests keep using the degradation path.
+        if (Date.now() - this.halfOpenStartedAtMs >= this.config.halfOpenMaxMs) {
+            if (this.state === 'HALF_OPEN') {
+                this.tripOpen('HALF_OPEN recovery deadline reached');
+            }
+            this.circuitRejectedTotal += 1;
+            return 'CIRCUIT_OPEN';
+        }
+
         if (this.probesDispatched >= this.config.halfOpenProbes) {
             this.circuitRejectedTotal += 1;
             return 'CIRCUIT_OPEN';
@@ -402,8 +481,10 @@ export class CircuitBreaker {
                     if (p99 <= this.config.p99UsRecovery
                         && errorRate(stats) <= this.config.errorRateRecovery) {
                         this.state = 'CLOSED';
-                        console.log(
+                        otelLog(
+                            'info',
                             `[redis_cb] HALF_OPEN -> CLOSED (recovery confirmed, p99=${p99}us, err_rate=${errorRate(stats).toFixed(2)})`,
+                            { circuit: 'CLOSED', p99Us: p99, errorRate: errorRate(stats) },
                         );
                     }
                 }
@@ -414,8 +495,9 @@ export class CircuitBreaker {
         }
 
         if (outcome === 'TIMEOUT') {
+            // §8 — timeouts do NOT count toward errorsTotal or the rolling
+            // error rate; they are a distinct health signal.
             this.timeoutsTotal += 1;
-            this.errorsTotal += 1;
             this.consecutiveFail += 1;
             this.consecutiveTimeout += 1;
 
@@ -486,7 +568,7 @@ export class CircuitBreaker {
             this.openedAtMs = Date.now();
             this.cooldownMs = effectiveCooldown;
             this.circuitOpenTotal += 1;
-            console.log(`[redis_cb] -> OPEN: ${reason} (cooldown=${effectiveCooldown}ms)`);
+            otelLog('warn', `[redis_cb] -> OPEN: ${reason} (cooldown=${effectiveCooldown}ms)`, { circuit: 'OPEN', reason, cooldownMs: effectiveCooldown });
         }
     }
 
@@ -497,6 +579,7 @@ export class CircuitBreaker {
         this.consecutiveTimeout = 0;
         this.probesDispatched = 0;
         this.halfOpenSuccesses = 0;
+        this.halfOpenStartedAtMs = 0;
         this.inflight = 0;
         this.window.reset();
     }
@@ -536,18 +619,42 @@ export async function withCircuitBreaker<T>(
         return { ok: false, outcome: rejected };
     }
 
-    const start = process.hrtime.bigint();
-    try {
-        const value = await fn();
-        const elapsedUs = Math.round(Number(process.hrtime.bigint() - start) / 1e3);
-        breaker.release('SUCCESS', elapsedUs);
-        return { ok: true, value };
-    } catch (err) {
-        const outcome = classifyRedisError(err);
-        const elapsedUs = Math.round(Number(process.hrtime.bigint() - start) / 1e3);
-        breaker.release(outcome, elapsedUs);
-        return { ok: false, outcome };
-    }
+    return await new Promise((resolve) => {
+        const start = process.hrtime.bigint();
+        let settled = false;
+
+        const finish = (outcome: RedisCallOutcome, value?: T): void => {
+            if (settled) return; // settle-once — timer and fn race
+            settled = true;
+            const elapsedUs = Math.round(Number(process.hrtime.bigint() - start) / 1e3);
+            breaker.release(outcome, elapsedUs);
+            if (outcome === 'SUCCESS') {
+                resolve({ ok: true, value: value as T });
+            } else {
+                resolve({ ok: false, outcome });
+            }
+        };
+
+        // Breaker-level operation deadline (§14): ioredis `commandTimeout` does
+        // NOT apply to commands queued while the connection is offline
+        // (enableOfflineQueue + lazyConnect). The breaker timeout guarantees the
+        // inflight slot is always released and the circuit observes the operation
+        // as a TIMEOUT, even if `fn` would otherwise hang forever.
+        const timer = setTimeout(() => finish('TIMEOUT'), breaker.config.operationTimeoutMs);
+        // Do not keep the process alive solely for breaker timeout timers.
+        timer.unref();
+
+        fn().then(
+            (value) => {
+                clearTimeout(timer);
+                finish('SUCCESS', value);
+            },
+            (err) => {
+                clearTimeout(timer);
+                finish(classifyRedisError(err));
+            },
+        );
+    });
 }
 
 /**

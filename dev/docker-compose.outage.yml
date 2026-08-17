@@ -1,0 +1,127 @@
+# ==============================================================================
+# Redis-outage load-testing stack — self-contained, NO external credentials.
+# ------------------------------------------------------------------------------
+# Brings up ONLY the pieces the Redis circuit-breaker outage harness needs:
+#   redis        (the dependency under chaos — paused/unpaused mid-run)
+#   postgres     (uam-backend refuses to boot without Postgres; /ready pings it)
+#   uam-backend  (Node breaker under test, loopback-only on :18080)
+#
+# Breaker env is tuned to fast, deterministic cycles so a run stays ~2 minutes:
+#   3 fast failures -> OPEN, 1s cooldown, 3 probes -> CLOSED.
+#
+# Run via:  ./scripts/breaker-outage-loadtest.ps1
+#   (or manually:  docker compose -f docker-compose.outage.yml up -d --build)
+#
+# This file is intentionally standalone (own `name:`) so it never collides
+# with the full dev stack (dev/docker-compose.yml).
+# ==============================================================================
+
+name: gateway-outage
+
+services:
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: uam
+      POSTGRES_PASSWORD: CHANGE_ME_DB_PASSWORD
+      POSTGRES_DB: uam
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U uam -d uam"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"
+
+  uam-backend:
+    build:
+      context: ../uam-backend
+      dockerfile: Dockerfile
+    image: uam-backend:outage-test
+    # Loopback-only so the k6 container (host docker) and orchestrator probes
+    # can reach it directly. No LAN exposure.
+    ports:
+      - "127.0.0.1:${UAM_OUTAGE_PORT:-18080}:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: "8080"
+      NODE_ENV: production
+      DATABASE_URL: postgres://uam:CHANGE_ME_DB_PASSWORD@postgres:5432/uam
+      REDIS_ENABLED: "true"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ""
+      # Fast breaker cycle (the harness asserts OPEN + recovery in ~seconds).
+      REDIS_CB_WINDOW_SECS: "10"
+      REDIS_CB_MIN_SAMPLES: "5"
+      REDIS_CB_CONSECUTIVE_FAIL_OPEN: "3"
+      REDIS_CB_CONSECUTIVE_TIMEOUT_OPEN: "2"
+      REDIS_CB_ERROR_RATE_OPEN: "0.5"
+      REDIS_CB_ERROR_RATE_RECOVERY: "0.1"
+      REDIS_CB_TIMEOUT_RATE_OPEN: "0.4"
+      REDIS_CB_P99_US_OPEN: "200000"
+      REDIS_CB_P99_US_RECOVERY: "50000"
+      REDIS_CB_OPEN_COOLDOWN_MS: "1000"
+      REDIS_CB_COOLDOWN_JITTER_MS: "0"
+      REDIS_CB_HALF_OPEN_PROBES: "3"
+      REDIS_CB_RECOVERY_SUCCESSES: "3"
+      REDIS_CB_HALF_OPEN_MAX_MS: "10000"
+      REDIS_CB_OPERATION_TIMEOUT_MS: "1000"
+      REDIS_CB_MAX_INFLIGHT: "32"
+      # ioredis: fail fast rather than queueing forever on a paused server; the
+      # breaker deadline then owns the "command never settles" case (§14).
+      REDIS_CONNECT_TIMEOUT_MS: "2000"
+      REDIS_COMMAND_TIMEOUT_MS: "1500"
+      REDIS_MAX_RETRIES_PER_REQUEST: "0"
+      # High max reconnect attempts so uam never permanently gives up on a transient outage
+      REDIS_MAX_RECONNECT_ATTEMPTS: "100000"
+      # Dev-only secret values (never production — UAM_REFUSE_INSECURE_SECRETS=0).
+      JWT_ACCESS_SECRET: outage_dev_access_secret
+      JWT_REFRESH_SECRET: outage_dev_refresh_secret
+      PASSWORD_PEPPER: outage_dev_pepper
+      ADMIN_API_KEY: outage_dev_admin_key
+      UAM_DEV_STACK: "1"
+      UAM_REFUSE_INSECURE_SECRETS: "0"
+      UAM_RELAX_AUTH_LIMITS: "1"
+      UAM_REQUIRE_DISTRIBUTED_RATE_LIMIT: "0"
+      AUTO_VERIFY_EMAIL: "true"
+      BCRYPT_COST: "4"
+      METRICS_TOKEN: ""
+    healthcheck:
+      # /health is process liveness (no Redis/Postgres) so the container stays
+      # "healthy" during the outage — /ready is what the harness asserts on.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"

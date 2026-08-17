@@ -1,3 +1,4 @@
+import { shutdownTelemetry } from './otel'; // must be imported before express (side-effect init)
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -149,6 +150,7 @@ const startServer = async (): Promise<void> => {
             server.close();
             await closeRedis();
             await disconnectDatabase();
+            await shutdownTelemetry();
             process.exit(0);
         };
 

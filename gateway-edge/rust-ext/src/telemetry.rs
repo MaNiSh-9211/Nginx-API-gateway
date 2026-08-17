@@ -61,6 +61,27 @@ pub fn start_telemetry_sync() {
     // HTTP Push removed. Prometheus will scrape /metrics instead.
 }
 
+pub struct TelemetrySnapshot {
+    pub requests_total:   u64,
+    pub requests_401:     u64,
+    pub requests_429:     u64,
+    pub requests_5xx:     u64,
+    pub latency_us_sum:   u64,
+    pub latency_us_count: u64,
+}
+
+pub fn snapshot() -> TelemetrySnapshot {
+    let m = get_metrics();
+    TelemetrySnapshot {
+        requests_total:   m.requests_total.load(Ordering::Relaxed),
+        requests_401:     m.requests_401.load(Ordering::Relaxed),
+        requests_429:     m.requests_429.load(Ordering::Relaxed),
+        requests_5xx:     m.requests_5xx.load(Ordering::Relaxed),
+        latency_us_sum:   m.latency_us_sum.load(Ordering::Relaxed),
+        latency_us_count: m.latency_us_count.load(Ordering::Relaxed),
+    }
+}
+
 pub fn record_request(status: i32, latency_us: usize) {
     let m = get_metrics();
     let lat = latency_us as u64;
@@ -123,6 +144,8 @@ pub fn prometheus_text() -> String {
     let cb_rejected_total = cb_inst.circuit_rejected_total.load(Ordering::Relaxed);
     let cb_state_val      = cb_inst.state();   // 0=CLOSED, 1=OPEN, 2=HALF_OPEN
     let cb_inflight       = cb_inst.inflight_count();
+    let cb_p50_us         = cb_inst.p50_us();
+    let cb_p95_us         = cb_inst.p95_us();
     let cb_p99_us         = cb_inst.p99_us();
     let cb_err_rate       = cb_inst.error_rate();
 
@@ -221,6 +244,12 @@ pub fn prometheus_text() -> String {
          # HELP redis_inflight_current Current Redis operations in flight\n\
          # TYPE redis_inflight_current gauge\n\
          redis_inflight_current {cb_inflight}\n\
+         # HELP redis_latency_p50_us Rolling p50 Redis latency in microseconds\n\
+         # TYPE redis_latency_p50_us gauge\n\
+         redis_latency_p50_us {cb_p50_us}\n\
+         # HELP redis_latency_p95_us Rolling p95 Redis latency in microseconds\n\
+         # TYPE redis_latency_p95_us gauge\n\
+         redis_latency_p95_us {cb_p95_us}\n\
          # HELP redis_latency_p99_us Rolling p99 Redis latency in microseconds\n\
          # TYPE redis_latency_p99_us gauge\n\
          redis_latency_p99_us {cb_p99_us}\n\

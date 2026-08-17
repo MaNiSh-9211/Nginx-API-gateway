@@ -20,6 +20,7 @@ use sha2::Sha256;
 
 mod redis_cb;
 mod store;
+mod otlp;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -924,10 +925,9 @@ async fn rebuild_initial_state(
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info"),
-    )
-    .init();
+    // Telemetry bootstrap (traces/metrics/logs → Grafana Cloud when
+    // OTEL_EXPORTER_OTLP_ENDPOINT is set; console-only otherwise).
+    let mut telemetry = otlp::init();
 
     warn_insecure_admin_key();
 
@@ -973,6 +973,7 @@ async fn main() -> std::io::Result<()> {
 
     HttpServer::new(move || {
         App::new()
+            .wrap(otlp::OtelMetrics)
             .app_data(app_state.clone())
             .app_data(web::JsonConfig::default().limit(1_048_576))
             .route("/health",          web::get().to(health))
@@ -988,7 +989,11 @@ async fn main() -> std::io::Result<()> {
     .bind(format!("0.0.0.0:{port}"))?
     .workers(workers)
     .run()
-    .await
+    .await?;
+
+    // Graceful telemetry flush (traces/metrics/logs) on shutdown.
+    telemetry.shutdown();
+    Ok(())
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────

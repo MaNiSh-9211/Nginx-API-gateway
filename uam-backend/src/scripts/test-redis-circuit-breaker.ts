@@ -9,6 +9,7 @@ import {
     CircuitBreakerConfig,
     defaultCircuitBreakerConfig,
     classifyRedisError,
+    withCircuitBreaker,
 } from '../config/redisCircuitBreaker';
 
 let failures = 0;
@@ -36,7 +37,18 @@ function breaker(modify: (c: CircuitBreakerConfig) => void): CircuitBreaker {
     cfg.p99UsRecovery = 1_000_000;
     cfg.errorRateRecovery = 1.0;
     modify(cfg);
-    return new CircuitBreaker(cfg);
+    // This helper deliberately disables hysteresis to isolate the fast
+    // detector; the resulting config warnings are noise, so silence stderr
+    // during construction.
+    const origWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (() => true) as typeof process.stderr.write;
+    let cb: CircuitBreaker;
+    try {
+        cb = new CircuitBreaker(cfg);
+    } finally {
+        process.stderr.write = origWrite;
+    }
+    return cb;
 }
 
 async function run(): Promise<void> {
@@ -144,13 +156,16 @@ async function run(): Promise<void> {
         if (result === null) eq(cb.currentState(), 'HALF_OPEN', 'transitions to HALF_OPEN');
     }
 
-    // 10. HALF_OPEN — only limited probes are allowed.
+    // 10. HALF_OPEN — only limited probes are allowed. Recovery is kept
+    //     impossible (slow probes vs low p99 recovery) so the probe cap is what
+    //     binds, not the CLOSED transition.
     {
         const cb = breaker((c) => {
             c.consecutiveFailOpen = 2;
             c.openCooldownMs = 100;
             c.cooldownJitterMs = 0;
             c.halfOpenProbes = 2;
+            c.p99UsRecovery = 1_000;
         });
         for (let i = 0; i < 2; i += 1) { cb.acquire(); cb.release('REDIS_ERROR', 1_000); }
         await sleep(150);
@@ -158,10 +173,11 @@ async function run(): Promise<void> {
         for (let i = 0; i < 10; i += 1) {
             if (cb.acquire() === null) {
                 allowed += 1;
-                cb.release('SUCCESS', 500);
+                cb.release('SUCCESS', 50_000);
             }
         }
-        ok(allowed <= 2, `HALF_OPEN limits probes (allowed ${allowed})`);
+        eq(allowed, 2, `HALF_OPEN limits probes (allowed ${allowed})`);
+        eq(cb.currentState(), 'HALF_OPEN', 'stays HALF_OPEN (recovery not met)');
     }
 
     // 11. Successful probes → HALF_OPEN → CLOSED.
@@ -171,14 +187,13 @@ async function run(): Promise<void> {
             c.openCooldownMs = 100;
             c.cooldownJitterMs = 0;
             c.recoverySuccesses = 2;
-            c.minSamples = 5;
         });
         for (let i = 0; i < 2; i += 1) { cb.acquire(); cb.release('REDIS_ERROR', 1_000); }
         await sleep(150);
-        cb.acquire();
-        eq(cb.currentState(), 'HALF_OPEN', 'entered HALF_OPEN');
-        cb.release('SUCCESS', 500);
-        cb.release('SUCCESS', 500);
+        for (let i = 0; i < 2; i += 1) {
+            eq(cb.acquire(), null, `probe ${i} allowed in HALF_OPEN`);
+            cb.release('SUCCESS', 500);
+        }
         eq(cb.currentState(), 'CLOSED', 'successful probes close the circuit');
     }
 
@@ -227,30 +242,37 @@ async function run(): Promise<void> {
         ok(seen.size > 1, `cooldown jitter is randomized (${seen.size} distinct values)`);
     }
 
-    // 15. Concurrent state transitions — no corruption.
+    // 15. Concurrent state transitions — real async interleaving, no corruption.
     {
-        const cb = breaker(() => {});
-        const jobs = Array.from({ length: 8 }, (_, t) =>
-            Promise.resolve().then(() => {
-                for (let i = 0; i < 1_000; i += 1) {
-                    const outcome = (t + i) % 5 === 0 ? 'REDIS_ERROR' : 'SUCCESS';
-                    if (cb.acquire() === null) {
-                        cb.release(outcome as 'SUCCESS', 500);
-                    }
+        const cb = breaker((c) => {
+            c.consecutiveFailOpen = 100;
+            c.consecutiveTimeoutOpen = 100;
+        });
+        const jobs = Array.from({ length: 8 }, (_, t) => (async () => {
+            for (let i = 0; i < 1_000; i += 1) {
+                const outcome = (t + i) % 5 === 0 ? 'REDIS_ERROR' : 'SUCCESS';
+                if (cb.acquire() === null) {
+                    cb.release(outcome as 'SUCCESS', 500);
                 }
-            }),
-        );
+                await Promise.resolve(); // force real microtask interleaving
+            }
+        })());
         await Promise.all(jobs);
         eq(cb.requestsTotal, 8_000, 'all concurrent releases recorded');
-        ok(['CLOSED', 'OPEN'].includes(cb.currentState()), 'state remains valid after concurrency');
+        eq(cb.inflightCount(), 0, 'no inflight leak after concurrency');
+        ok(cb.isClosed(), 'state remains valid after concurrency');
     }
 
-    // 16. Redis timeout — command does not block indefinitely.
+    // 16. Timeout is a distinct health signal — it must NOT count as an error (§8).
     {
-        const cb = breaker(() => {});
-        cb.acquire();
-        cb.release('TIMEOUT', 500_000);
-        ok(cb.timeoutsTotal === 1, 'timeout recorded');
+        const cb = breaker((c) => {
+            c.consecutiveTimeoutOpen = 100;
+            c.consecutiveFailOpen = 100;
+        });
+        for (let i = 0; i < 3; i += 1) { cb.acquire(); cb.release('TIMEOUT', 500_000); }
+        eq(cb.timeoutsTotal, 3, 'timeouts recorded');
+        eq(cb.errorsTotal, 0, 'timeouts do NOT inflate the error counter');
+        ok(cb.isClosed(), 'low-volume slow ops stay CLOSED');
     }
 
     // 17. Redis slow — concurrency remains bounded.
@@ -281,6 +303,119 @@ async function run(): Promise<void> {
         );
         ok(results.length === 50, 'parallel acquire/release pairs completed');
         eq(cb.requestsTotal, 50, 'all pairs recorded exactly once');
+        eq(cb.inflightCount(), 0, 'inflight back to zero after parallel pairs');
+    }
+
+    // 21. HALF_OPEN probe budget is exact — nothing beyond the cap is a probe.
+    //     Recovery stays impossible so the probe cap binds, not the CLOSED hop.
+    {
+        const cb = breaker((c) => {
+            c.consecutiveFailOpen = 2;
+            c.openCooldownMs = 100;
+            c.cooldownJitterMs = 0;
+            c.halfOpenProbes = 2;
+            c.recoverySuccesses = 2;
+            c.p99UsRecovery = 1_000;
+        });
+        for (let i = 0; i < 2; i += 1) { cb.acquire(); cb.release('REDIS_ERROR', 1_000); }
+        await sleep(150);
+        let allowed = 0;
+        for (let i = 0; i < 10; i += 1) {
+            if (cb.acquire() === null) { allowed += 1; cb.release('SUCCESS', 50_000); }
+        }
+        eq(allowed, 2, `HALF_OPEN allows exactly halfOpenProbes probes (got ${allowed})`);
+        eq(cb.acquire(), 'CIRCUIT_OPEN', 'probes beyond the budget are rejected');
+    }
+
+    // 22. HALF_OPEN must never wedge (§18/§19) — re-arms OPEN after halfOpenMaxMs.
+    {
+        const cb = breaker((c) => {
+            c.consecutiveFailOpen = 2;
+            c.openCooldownMs = 100;
+            c.cooldownJitterMs = 0;
+            c.halfOpenProbes = 2;
+            c.recoverySuccesses = 2;
+            c.p99UsRecovery = 1_000; // 50ms probes can never meet recovery
+            c.halfOpenMaxMs = 1_000;
+        });
+        for (let i = 0; i < 2; i += 1) { cb.acquire(); cb.release('REDIS_ERROR', 1_000); }
+        await sleep(150); // OPEN cooldown (100ms) elapses
+        for (let i = 0; i < 2; i += 1) {
+            if (cb.acquire() === null) cb.release('SUCCESS', 50_000);
+        }
+        eq(cb.currentState(), 'HALF_OPEN', 'probes stay in HALF_OPEN (hysteresis zone)');
+        eq(cb.acquire(), 'CIRCUIT_OPEN', 'budget exhausted → degradation path');
+        await sleep(1_100); // exceeds halfOpenMaxMs (1_000)
+        eq(cb.acquire(), 'CIRCUIT_OPEN', 'first acquire after the deadline re-arms OPEN');
+        await sleep(150); // fresh OPEN cooldown (100ms) elapses
+        ok(cb.acquire() === null, 'breaker probes again after re-arming instead of wedging');
+    }
+
+    // 23. withCircuitBreaker does NOT invoke fn while the circuit is OPEN.
+    {
+        const cb = breaker((c) => { c.consecutiveFailOpen = 2; });
+        for (let i = 0; i < 2; i += 1) { cb.acquire(); cb.release('REDIS_ERROR', 1_000); }
+        eq(cb.currentState(), 'OPEN', 'circuit is open');
+        let invoked = false;
+        const r = await withCircuitBreaker(cb, async () => { invoked = true; return 42; });
+        eq(r.ok, false, 'operation rejected while OPEN');
+        if (!r.ok) eq(r.outcome, 'CIRCUIT_OPEN', 'rejection reason is CIRCUIT_OPEN');
+        ok(!invoked, 'fn is NOT invoked while OPEN');
+        eq(cb.inflightCount(), 0, 'no inflight slot leaked');
+    }
+
+    // 24. Breaker-level operation deadline (§14): a command that never settles
+    //     is released as TIMEOUT and the inflight slot is freed exactly once.
+    {
+        const cb = breaker((c) => { c.operationTimeoutMs = 100; });
+        const startedAt = Date.now();
+        // The breaker deadline timer is unref()'d (correct for a server, where
+        // other handles keep the loop alive). A bare `await` here would let the
+        // process exit before the timer fires, so hold a ref'd timer alongside.
+        const holder = sleep(500);
+        const r = (await Promise.all([
+            withCircuitBreaker(cb, () => new Promise<never>(() => { /* intentionally never settles */ })),
+            holder,
+        ]))[0];
+        eq(r.ok, false, 'hanging command is rejected');
+        if (!r.ok) eq(r.outcome, 'TIMEOUT', 'hang observed as TIMEOUT');
+        ok(Date.now() - startedAt >= 90, 'breaker deadline enforced');
+        eq(cb.inflightCount(), 0, 'inflight slot released after breaker timeout');
+        eq(cb.timeoutsTotal, 1, 'timeout recorded exactly once');
+        eq(cb.requestsTotal, 1, 'release recorded exactly once');
+    }
+
+    // 25. Config normalization (§12): recoverySuccesses clamped to halfOpenProbes.
+    {
+        const cfg = defaultCircuitBreakerConfig();
+        cfg.halfOpenProbes = 2;
+        cfg.recoverySuccesses = 5; // would make recovery impossible
+        const cb = new CircuitBreaker(cfg);
+        ok(
+            cb.config.recoverySuccesses <= cb.config.halfOpenProbes,
+            'recoverySuccesses clamped to halfOpenProbes',
+        );
+        eq(cb.config.recoverySuccesses, 2, 'clamped value equals halfOpenProbes');
+    }
+
+    // 26. A late-completing failure while already OPEN must not extend the
+    //     OPEN cooldown (would delay recovery forever).
+    {
+        const cb = breaker((c) => {
+            c.consecutiveFailOpen = 2;
+            c.openCooldownMs = 100;
+            c.cooldownJitterMs = 0;
+        });
+        for (let i = 0; i < 2; i += 1) { cb.acquire(); cb.release('REDIS_ERROR', 1_000); }
+        eq(cb.currentState(), 'OPEN', 'circuit is open');
+        const fields = cb as unknown as { openedAtMs: number; cooldownMs: number };
+        const openedAt1 = fields.openedAtMs;
+        const cooldown1 = fields.cooldownMs;
+        eq(cooldown1, 100, 'cooldown set to base (no jitter)');
+        await sleep(10);
+        cb.release('TIMEOUT', 500_000); // in-flight op completing after OPEN
+        eq(fields.openedAtMs, openedAt1, 'OPEN cooldown not re-armed');
+        eq(fields.cooldownMs, cooldown1, 'cooldown unchanged by late failure');
     }
 
     console.log(`\nredis circuit breaker: ${checks} checks, ${failures} failures`);

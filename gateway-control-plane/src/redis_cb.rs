@@ -41,9 +41,21 @@
 //!   TIMEOUT              — I/O or connect deadline exceeded
 //!   CIRCUIT_OPEN         — circuit prevented the call (fast rejection)
 //!   CONCURRENCY_REJECTED — too many Redis ops in flight (back-pressure)
+//!
+//! Retry behavior (§16): control-plane Redis calls are deliberately single-shot —
+//! there is NO retry loop. A failure (or `CIRCUIT_OPEN` / `CONCURRENCY_REJECTED`)
+//! is returned to the caller, which applies its degradation policy (in-memory
+//! fallback, 503, etc.). Retrying here would amplify an outage; the circuit
+//! breaker already re-allows probes after the cooldown.
+//!
+//! Known limitations / future work:
+//!   - §13 baseline-aware (relative) latency detection is NOT implemented;
+//!     absolute thresholds are used. Relative degradation is a future improvement.
+//!   - §24 distributed tracing (OpenTelemetry spans) is NOT implemented anywhere
+//!     in the control plane yet. The circuit breaker emits no spans.
 
 use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -100,6 +112,10 @@ pub struct CbConfig {
     pub recovery_successes:     u32,
     /// Max Redis operations in flight (concurrency protection).
     pub max_inflight:           i64,
+    /// Max time HALF_OPEN may keep probing before re-arming OPEN (ms).
+    /// Prevents a stuck HALF_OPEN wedge when probes succeed but recovery
+    /// thresholds are not met (§18/§19).
+    pub half_open_max_ms:       u64,
 }
 
 impl CbConfig {
@@ -118,6 +134,7 @@ impl CbConfig {
         let probes      = env_u32("CP_REDIS_CB_HALF_OPEN_PROBES", 3);
         let rec_succ    = env_u32("CP_REDIS_CB_RECOVERY_SUCCESSES", 3);
         let max_inf     = env_u64("CP_REDIS_CB_MAX_INFLIGHT", 32) as i64;
+        let half_max    = env_u64("CP_REDIS_CB_HALF_OPEN_MAX_MS", 10_000);
 
         CbConfig {
             window_secs:           window_secs.clamp(1, 60),
@@ -134,7 +151,43 @@ impl CbConfig {
             half_open_probes:      probes.clamp(1, 20),
             recovery_successes:    rec_succ.clamp(1, 20),
             max_inflight:          max_inf.clamp(1, 10_000),
+            half_open_max_ms:      half_max.clamp(1_000, 600_000),
         }
+        .normalize()
+    }
+
+    /// Cross-field normalization (§12): enforce invariants that would otherwise
+    /// silently break hysteresis or make recovery impossible.
+    ///
+    /// - `recovery_successes` must not exceed `half_open_probes` (otherwise the
+    ///   circuit could never accumulate enough successful probes to recover).
+    /// - RECOVERY thresholds should be below their OPEN counterparts; a
+    ///   misconfigured env is warned about instead of silently disabling
+    ///   hysteresis.
+    fn normalize(mut self) -> Self {
+        if self.recovery_successes > self.half_open_probes {
+            eprintln!(
+                "[redis_cb] WARN: CP_REDIS_CB_RECOVERY_SUCCESSES ({}) > CP_REDIS_CB_HALF_OPEN_PROBES ({}); \
+                 recovery would be impossible — clamping to {}",
+                self.recovery_successes, self.half_open_probes, self.half_open_probes
+            );
+            self.recovery_successes = self.half_open_probes;
+        }
+        if self.p99_us_recovery >= self.p99_us_open as f64 {
+            eprintln!(
+                "[redis_cb] WARN: p99 recovery threshold ({:.0}µs) >= open threshold ({}µs); \
+                 hysteresis disabled — set CP_REDIS_CB_P99_US_RECOVERY below CP_REDIS_CB_P99_US_OPEN",
+                self.p99_us_recovery, self.p99_us_open
+            );
+        }
+        if self.error_rate_recovery >= self.error_rate_open {
+            eprintln!(
+                "[redis_cb] WARN: error-rate recovery threshold ({}) >= open threshold ({}); \
+                 hysteresis disabled — set CP_REDIS_CB_ERROR_RATE_RECOVERY below CP_REDIS_CB_ERROR_RATE_OPEN",
+                self.error_rate_recovery, self.error_rate_open
+            );
+        }
+        self
     }
 }
 
@@ -174,25 +227,35 @@ const HIST_BOUNDS_US: [u64; HIST_BANDS - 1] = [
 const MAX_WINDOW_BUCKETS: usize = 64; // must be >= window_secs max (60)
 
 /// A single one-second time bucket.
-#[derive(Default)]
+///
+/// Guarded by a `Mutex`: the lazy reset (`ts != now`) and the per-band
+/// increments must be atomic with respect to each other, otherwise concurrent
+/// `record()` calls can corrupt the histogram during a reset (§30). `acquire()`
+/// remains lock-free; this lock is only taken once per completed Redis call.
 struct TimeBucket {
-    ts:          AtomicU32,               // Unix second this bucket covers
-    total:       AtomicU64,               // total requests
-    errors:      AtomicU64,               // error count
-    timeouts:    AtomicU64,               // timeout count
-    latency_sum: AtomicU64,               // sum of latencies in µs
-    hist:        [AtomicU64; HIST_BANDS], // latency histogram
+    ts:          u32,
+    total:       u64,
+    errors:      u64,
+    timeouts:    u64,
+    latency_sum: u64,
+    hist:        [u64; HIST_BANDS],
+}
+
+impl Default for TimeBucket {
+    fn default() -> Self {
+        Self { ts: 0, total: 0, errors: 0, timeouts: 0, latency_sum: 0, hist: [0; HIST_BANDS] }
+    }
 }
 
 struct RollingWindow {
-    buckets: Vec<TimeBucket>,
+    buckets: Vec<Mutex<TimeBucket>>,
 }
 
 impl RollingWindow {
     fn new(size: usize) -> Self {
         let mut buckets = Vec::with_capacity(size);
         for _ in 0..size {
-            buckets.push(TimeBucket::default());
+            buckets.push(Mutex::new(TimeBucket::default()));
         }
         Self { buckets }
     }
@@ -204,39 +267,28 @@ impl RollingWindow {
             .as_secs() as u32
     }
 
-    fn slot(&self, ts: u32) -> &TimeBucket {
-        &self.buckets[(ts as usize) % self.buckets.len()]
-    }
-
     /// Record one Redis call outcome in the appropriate time bucket.
     fn record(&self, outcome: RedisCallOutcome, latency_us: u64) {
         let ts = Self::current_ts();
-        let b  = self.slot(ts);
+        let mut b = self.buckets[(ts as usize) % self.buckets.len()].lock().unwrap();
 
         // Lazily clear the bucket when it belongs to a different second.
-        let old_ts = b.ts.load(Ordering::Relaxed);
-        if old_ts != ts && b.ts.compare_exchange(old_ts, ts, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
-            b.total.store(0, Ordering::Relaxed);
-            b.errors.store(0, Ordering::Relaxed);
-            b.timeouts.store(0, Ordering::Relaxed);
-            b.latency_sum.store(0, Ordering::Relaxed);
-            for h in b.hist.iter() {
-                h.store(0, Ordering::Relaxed);
-            }
+        // Mutex makes this reset atomic w.r.t. the increments below.
+        if b.ts != ts {
+            *b = TimeBucket { ts, ..TimeBucket::default() };
         }
 
-        b.total.fetch_add(1, Ordering::Relaxed);
-        b.latency_sum.fetch_add(latency_us, Ordering::Relaxed);
+        b.total += 1;
+        b.latency_sum += latency_us;
 
         let band = HIST_BOUNDS_US.partition_point(|&bound| latency_us > bound);
-        b.hist[band].fetch_add(1, Ordering::Relaxed);
+        b.hist[band] += 1;
 
         match outcome {
-            RedisCallOutcome::RedisError => { b.errors.fetch_add(1, Ordering::Relaxed); }
-            RedisCallOutcome::Timeout    => {
-                b.timeouts.fetch_add(1, Ordering::Relaxed);
-                b.errors.fetch_add(1, Ordering::Relaxed); // timeout is also an error
-            }
+            RedisCallOutcome::RedisError => { b.errors += 1; }
+            // §8 — timeouts are tracked separately from general errors so the
+            // error-rate and timeout-rate health signals stay independent.
+            RedisCallOutcome::Timeout    => { b.timeouts += 1; }
             _ => {}
         }
     }
@@ -251,16 +303,16 @@ impl RollingWindow {
         let mut timeouts = 0u64;
         let mut hist = [0u64; HIST_BANDS];
 
-        for b in self.buckets.iter() {
-            let ts = b.ts.load(Ordering::Relaxed);
-            if ts < cutoff || ts > now_ts {
+        for bucket in self.buckets.iter() {
+            let b = bucket.lock().unwrap();
+            if b.ts < cutoff || b.ts > now_ts {
                 continue; // stale
             }
-            total    += b.total.load(Ordering::Relaxed);
-            errors   += b.errors.load(Ordering::Relaxed);
-            timeouts += b.timeouts.load(Ordering::Relaxed);
+            total    += b.total;
+            errors   += b.errors;
+            timeouts += b.timeouts;
             for (band, count) in b.hist.iter().enumerate() {
-                hist[band] += count.load(Ordering::Relaxed);
+                hist[band] += count;
             }
         }
 
@@ -329,6 +381,8 @@ pub struct CircuitBreaker {
     probes_dispatched:   AtomicU32,
     /// Consecutive successes in HALF_OPEN.
     half_open_successes: AtomicU32,
+    /// Unix millisecond when HALF_OPEN was entered (for the half-open deadline).
+    half_open_started_at_ms: AtomicU64,
     /// Rolling window for statistical detection.
     window:              RollingWindow,
     /// Redis operations currently in flight.
@@ -346,6 +400,7 @@ pub struct CircuitBreaker {
 
 impl CircuitBreaker {
     pub fn new(config: CbConfig) -> Self {
+        let config = config.normalize();
         let window_size = config.window_secs.clamp(1, MAX_WINDOW_BUCKETS as u64) as usize;
         Self {
             config,
@@ -356,6 +411,7 @@ impl CircuitBreaker {
             consecutive_timeout: AtomicU32::new(0),
             probes_dispatched:   AtomicU32::new(0),
             half_open_successes: AtomicU32::new(0),
+            half_open_started_at_ms: AtomicU64::new(0),
             window:              RollingWindow::new(window_size),
             inflight:            AtomicI64::new(0),
             redis_requests_total:    AtomicU64::new(0),
@@ -402,10 +458,19 @@ impl CircuitBreaker {
                     ).is_ok() {
                         self.probes_dispatched.store(0, Ordering::Relaxed);
                         self.half_open_successes.store(0, Ordering::Relaxed);
+                        self.half_open_started_at_ms.store(now_ms, Ordering::Relaxed);
                         self.circuit_half_open_total.fetch_add(1, Ordering::Relaxed);
                         log::info!("[redis_cb] OPEN → HALF_OPEN (cooldown elapsed)");
+                        return self.acquire_half_open();
                     }
-                    // Whether we won or lost the CAS, fall through to HALF_OPEN logic
+                    // Lost the OPEN→HALF_OPEN CAS race. Re-check the state: the
+                    // winning thread may have entered HALF_OPEN and already
+                    // re-opened (failed probe). Never dispatch a probe while the
+                    // circuit is OPEN (§17).
+                    if self.state.load(Ordering::Acquire) == STATE_OPEN {
+                        self.circuit_rejected_total.fetch_add(1, Ordering::Relaxed);
+                        return Err(RedisCallOutcome::CircuitOpen);
+                    }
                     return self.acquire_half_open();
                 }
 
@@ -421,6 +486,28 @@ impl CircuitBreaker {
 
     fn acquire_half_open(&self) -> Result<(), RedisCallOutcome> {
         let cfg = &self.config;
+        let now_ms = now_ms();
+        let started = self.half_open_started_at_ms.load(Ordering::Relaxed);
+
+        // §18/§19 — HALF_OPEN must never wedge. If the circuit has been probing
+        // for `half_open_max_ms` without a confirmed recovery, re-arm OPEN with
+        // a fresh jittered cooldown so the fleet retries deliberately later.
+        // Current requests keep using the degradation path (§17).
+        if now_ms.saturating_sub(started) >= cfg.half_open_max_ms {
+            if self.state.compare_exchange(
+                STATE_HALF_OPEN, STATE_OPEN,
+                Ordering::AcqRel, Ordering::Relaxed,
+            ).is_ok() {
+                let effective_cooldown = self.jittered_cooldown();
+                self.opened_at_ms.store(now_ms, Ordering::Relaxed);
+                self.cooldown_ms.store(effective_cooldown, Ordering::Relaxed);
+                self.circuit_open_total.fetch_add(1, Ordering::Relaxed);
+                log::warn!("[redis_cb] HALF_OPEN → OPEN (recovery deadline reached)");
+            }
+            self.circuit_rejected_total.fetch_add(1, Ordering::Relaxed);
+            return Err(RedisCallOutcome::CircuitOpen);
+        }
+
         // §18 — Only allow half_open_probes probe requests
         let dispatched = self.probes_dispatched.fetch_add(1, Ordering::AcqRel);
         if dispatched >= cfg.half_open_probes {
@@ -482,8 +569,9 @@ impl CircuitBreaker {
             }
 
             RedisCallOutcome::Timeout => {
+                // §8 — timeouts do NOT count toward redis_errors_total or the
+                // rolling error rate; they are a distinct health signal.
                 self.redis_timeouts_total.fetch_add(1, Ordering::Relaxed);
-                self.redis_errors_total.fetch_add(1, Ordering::Relaxed);
                 let cf = self.consecutive_fail.fetch_add(1, Ordering::AcqRel) + 1;
                 let ct = self.consecutive_timeout.fetch_add(1, Ordering::AcqRel) + 1;
 
@@ -555,35 +643,46 @@ impl CircuitBreaker {
 
     // ── State transition: → OPEN ──────────────────────────────────────────────
 
-    fn trip_open(&self, reason: &str) {
+    /// Base cooldown + randomized jitter for this OPEN cycle (§20, §21).
+    fn jittered_cooldown(&self) -> u64 {
         let cfg = &self.config;
-
-        // Jitter: prevents all gateway instances from recovering at exactly the
-        // same time (fleet-level recovery storm — §20, §21).
-        let jitter_ms = if cfg.cooldown_jitter_ms > 0 {
-            // Cheap pseudo-random: mix of process id + current time
+        if cfg.cooldown_jitter_ms > 0 {
+            // Cheap pseudo-random: mix of process id + current time.
             let seed = (std::process::id() as u64)
                 .wrapping_mul(6364136223846793005)
                 .wrapping_add(now_ms());
-            (seed >> 33) % cfg.cooldown_jitter_ms
+            cfg.open_cooldown_ms + (seed >> 33) % cfg.cooldown_jitter_ms
         } else {
-            0
-        };
-        let effective_cooldown = cfg.open_cooldown_ms + jitter_ms;
-
-        if self.state.compare_exchange(
-            self.state.load(Ordering::Acquire),
-            STATE_OPEN,
-            Ordering::AcqRel,
-            Ordering::Relaxed,
-        ).is_ok() {
-            self.opened_at_ms.store(now_ms(), Ordering::Relaxed);
-            self.cooldown_ms.store(effective_cooldown, Ordering::Relaxed);
-            self.circuit_open_total.fetch_add(1, Ordering::Relaxed);
-            log::info!(
-                "[redis_cb] → OPEN: {reason} (cooldown={effective_cooldown}ms)"
-            );
+            cfg.open_cooldown_ms
         }
+    }
+
+    fn trip_open(&self, reason: &str) {
+        // Never extend an existing OPEN cooldown: a request that started before
+        // the circuit opened may release() afterwards, and re-tripping would
+        // keep resetting the cooldown and delay recovery (§races). Only the
+        // first transition re-arms the timer.
+        let mut expected = self.state.load(Ordering::Acquire);
+        loop {
+            if expected == STATE_OPEN {
+                return;
+            }
+            match self.state.compare_exchange_weak(
+                expected, STATE_OPEN,
+                Ordering::AcqRel, Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(actual) => expected = actual,
+            }
+        }
+
+        let effective_cooldown = self.jittered_cooldown();
+        self.opened_at_ms.store(now_ms(), Ordering::Relaxed);
+        self.cooldown_ms.store(effective_cooldown, Ordering::Relaxed);
+        self.circuit_open_total.fetch_add(1, Ordering::Relaxed);
+        log::info!(
+            "[redis_cb] → OPEN: {reason} (cooldown={effective_cooldown}ms)"
+        );
     }
 
     // ── State query ───────────────────────────────────────────────────────────
@@ -600,6 +699,18 @@ impl CircuitBreaker {
     pub fn p99_us(&self) -> u64 {
         let cfg = &self.config;
         self.window.aggregate(cfg.window_secs).percentile_us(99.0)
+    }
+
+    /// p50 latency in µs from the rolling window (for Prometheus).
+    pub fn p50_us(&self) -> u64 {
+        let cfg = &self.config;
+        self.window.aggregate(cfg.window_secs).percentile_us(50.0)
+    }
+
+    /// p95 latency in µs from the rolling window (for Prometheus).
+    pub fn p95_us(&self) -> u64 {
+        let cfg = &self.config;
+        self.window.aggregate(cfg.window_secs).percentile_us(95.0)
     }
 
     /// Current error rate from the rolling window (for Prometheus).
@@ -741,6 +852,8 @@ pub fn prometheus_metrics() -> String {
     let cb = get_cb();
     let state_val   = cb.state(); // 0=CLOSED, 1=OPEN, 2=HALF_OPEN
     let inflight    = cb.inflight_count();
+    let p50_us      = cb.p50_us();
+    let p95_us      = cb.p95_us();
     let p99_us      = cb.p99_us();
     let err_rate    = cb.error_rate();
 
@@ -772,6 +885,12 @@ pub fn prometheus_metrics() -> String {
          # HELP redis_inflight_current Current Redis operations in flight\n\
          # TYPE redis_inflight_current gauge\n\
          redis_inflight_current {}\n\
+         # HELP redis_latency_p50_us Rolling p50 Redis latency in microseconds\n\
+         # TYPE redis_latency_p50_us gauge\n\
+         redis_latency_p50_us {}\n\
+         # HELP redis_latency_p95_us Rolling p95 Redis latency in microseconds\n\
+         # TYPE redis_latency_p95_us gauge\n\
+         redis_latency_p95_us {}\n\
          # HELP redis_latency_p99_us Rolling p99 Redis latency in microseconds\n\
          # TYPE redis_latency_p99_us gauge\n\
          redis_latency_p99_us {}\n\
@@ -787,6 +906,8 @@ pub fn prometheus_metrics() -> String {
         cb.circuit_half_open_total.load(Ordering::Relaxed),
         cb.circuit_rejected_total.load(Ordering::Relaxed),
         inflight,
+        p50_us,
+        p95_us,
         p99_us,
         err_rate,
     )
@@ -1088,11 +1209,157 @@ mod tests {
 
     #[test]
     fn classify_io_timeout_message() {
-        // Simulate the redis crate's "timed out" IO error text.
-        let err = std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out");
-        // Construct via a real failed call to keep behavior honest is hard offline;
-        // just verify the string heuristic used by classify via a manual probe.
-        let msg = err.to_string();
-        assert!(msg.contains("timed out"));
+        // A real io::Error with ErrorKind::TimedOut must classify as Timeout (§7).
+        let io_err = std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out");
+        let err: redis::RedisError = io_err.into();
+        assert_eq!(classify_redis_error(&err), RedisCallOutcome::Timeout);
+
+        // A connection-reset style IO error (no "timed out" text) is a RedisError.
+        let io_err = std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "connection reset by peer",
+        );
+        let err: redis::RedisError = io_err.into();
+        assert_eq!(classify_redis_error(&err), RedisCallOutcome::RedisError);
+    }
+
+    // §28 #10 — HALF_OPEN only allows `half_open_probes` probes; the rest are
+    // rejected so the degradation path is used.
+    #[test]
+    fn half_open_probe_budget_exact() {
+        let cb = custom_cb(|c| {
+            c.consecutive_fail_open = 2;
+            c.half_open_probes = 2;
+            c.open_cooldown_ms = 1;
+            c.cooldown_jitter_ms = 0;
+            c.min_samples = 100;
+        });
+        for _ in 0..2 {
+            cb.acquire().unwrap();
+            cb.release(RedisCallOutcome::RedisError, 2_000);
+        }
+        assert_eq!(cb.state(), STATE_OPEN);
+
+        std::thread::sleep(Duration::from_millis(5));
+        let mut allowed = 0;
+        for _ in 0..10 {
+            match cb.acquire() {
+                Ok(()) => {
+                    allowed += 1;
+                    cb.release(RedisCallOutcome::Success, 1_000);
+                }
+                Err(_) => break,
+            }
+        }
+        assert_eq!(allowed, 2, "HALF_OPEN must allow exactly half_open_probes probes");
+        assert_eq!(cb.acquire(), Err(RedisCallOutcome::CircuitOpen));
+    }
+
+    // §18/§19 — HALF_OPEN must never wedge: if probes succeed but recovery
+    // thresholds are not met (hysteresis zone) and the budget is exhausted,
+    // the circuit re-arms OPEN after `half_open_max_ms` instead of rejecting
+    // all Redis traffic forever.
+    #[test]
+    fn half_open_does_not_wedge_when_recovery_not_met() {
+        let cb = custom_cb(|c| {
+            c.consecutive_fail_open = 2;
+            c.half_open_probes = 2;
+            c.recovery_successes = 2;
+            c.p99_us_recovery = 10_000.0; // 50ms probes can never recover
+            c.error_rate_recovery = 0.1;
+            c.open_cooldown_ms = 1;
+            c.cooldown_jitter_ms = 0;
+            c.min_samples = 100;
+            c.half_open_max_ms = 400;
+        });
+        for _ in 0..2 {
+            cb.acquire().unwrap();
+            cb.release(RedisCallOutcome::RedisError, 2_000);
+        }
+        assert_eq!(cb.state(), STATE_OPEN);
+
+        std::thread::sleep(Duration::from_millis(5));
+        for _ in 0..2 {
+            if cb.acquire().is_ok() {
+                cb.release(RedisCallOutcome::Success, 50_000);
+            }
+        }
+        assert_eq!(cb.state(), STATE_HALF_OPEN);
+        // Budget exhausted → traffic stays on the degradation path.
+        assert_eq!(cb.acquire(), Err(RedisCallOutcome::CircuitOpen));
+
+        // After the half-open deadline the breaker re-arms and probes again.
+        std::thread::sleep(Duration::from_millis(450));
+        let rearm = cb.acquire();
+        assert_eq!(rearm, Err(RedisCallOutcome::CircuitOpen), "re-arm request is rejected");
+        // Give the fresh OPEN cooldown a chance to elapse, then verify the
+        // breaker probes again instead of wedging.
+        std::thread::sleep(Duration::from_millis(10));
+        assert!(
+            cb.acquire().is_ok(),
+            "circuit must probe again after re-arming instead of wedging"
+        );
+    }
+
+    // §8 — Timeouts are a distinct health signal: they must NOT inflate the
+    // error counter / error rate.
+    #[test]
+    fn timeout_not_counted_as_error() {
+        let cb = custom_cb(|c| {
+            c.consecutive_fail_open = 100;
+            c.consecutive_to_open = 100;
+            c.min_samples = 100;
+        });
+        for _ in 0..3 {
+            cb.acquire().unwrap();
+            cb.release(RedisCallOutcome::Timeout, 500_000);
+        }
+        assert_eq!(cb.redis_timeouts_total.load(Ordering::Relaxed), 3);
+        assert_eq!(cb.redis_errors_total.load(Ordering::Relaxed), 0);
+        let stats = cb.window.aggregate(cb.config.window_secs);
+        assert_eq!(stats.timeouts, 3);
+        assert_eq!(stats.errors, 0);
+        assert!((stats.error_rate() - 0.0).abs() < 1e-9);
+    }
+
+    // §12 — Cross-field config invariants are enforced on construction:
+    // recovery_successes must not exceed half_open_probes.
+    #[test]
+    fn hysteresis_config_normalized() {
+        let cb = custom_cb(|c| {
+            c.half_open_probes = 2;
+            c.recovery_successes = 5; // would make recovery impossible
+        });
+        assert!(
+            cb.config.recovery_successes <= cb.config.half_open_probes,
+            "recovery_successes must be clamped to half_open_probes"
+        );
+        assert_eq!(cb.config.recovery_successes, 2);
+    }
+
+    // §races — An in-flight operation that completes after the circuit opened
+    // must not keep re-arming (extending) the OPEN cooldown.
+    #[test]
+    fn cooldown_not_extended_when_already_open() {
+        let cb = custom_cb(|c| {
+            c.consecutive_fail_open = 2;
+            c.open_cooldown_ms = 100;
+            c.cooldown_jitter_ms = 0;
+            c.min_samples = 100;
+        });
+        for _ in 0..2 {
+            cb.acquire().unwrap();
+            cb.release(RedisCallOutcome::RedisError, 2_000);
+        }
+        assert_eq!(cb.state(), STATE_OPEN);
+        let opened_at_1 = cb.opened_at_ms.load(Ordering::Relaxed);
+        let cooldown_1 = cb.cooldown_ms.load(Ordering::Relaxed);
+        assert_eq!(cooldown_1, 100);
+
+        std::thread::sleep(Duration::from_millis(10));
+        // A late-completing failure while already OPEN must not extend cooldown.
+        cb.release(RedisCallOutcome::Timeout, 500_000);
+        assert_eq!(cb.opened_at_ms.load(Ordering::Relaxed), opened_at_1);
+        assert_eq!(cb.cooldown_ms.load(Ordering::Relaxed), cooldown_1);
     }
 }

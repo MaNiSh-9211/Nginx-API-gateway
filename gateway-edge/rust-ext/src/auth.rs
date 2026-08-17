@@ -212,6 +212,26 @@ fn redis_timeout_ms() -> u64 {
         .unwrap_or(50)
 }
 
+/// Max attempts for revocation / token-version Redis lookups (§16, §26).
+/// Bounded [1, 5] so an operator can tune retry behaviour without a code
+/// change, while retries can never amplify an outage indefinitely.
+fn redis_retry_attempts() -> usize {
+    std::env::var("REDIS_AUTH_RETRY_ATTEMPTS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .map(|v| v.clamp(1, 5))
+        .unwrap_or(2)
+}
+
+/// Base backoff between retries, in ms (§21). Jitter is added on top.
+fn redis_retry_backoff_ms() -> u64 {
+    std::env::var("REDIS_AUTH_RETRY_BACKOFF_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(|v| v.clamp(1, 100))
+        .unwrap_or(2)
+}
+
 thread_local! {
     /// Per-worker persistent Redis connection for revocation lookups.
     static REDIS_CONN: RefCell<Option<redis::Connection>> = const { RefCell::new(None) };
@@ -236,11 +256,11 @@ fn check_token_version(user_id: &str, tv: Option<u64>) -> TokenVersionStatus {
     let result = with_circuit_breaker(|| {
         REDIS_CONN.with(|cell| {
             let mut guard = cell.borrow_mut();
-            for attempt in 0..2 {
+            for attempt in 0..redis_retry_attempts() {
                 if attempt > 0 {
                     // §16, §21 — Bounded backoff + jitter to prevent retry storms
                     let jitter_ms = (std::process::id() as u64 + attempt as u64) % 5;
-                    std::thread::sleep(Duration::from_millis(2 + jitter_ms));
+                    std::thread::sleep(Duration::from_millis(redis_retry_backoff_ms() + jitter_ms));
                 }
                 if guard.is_none() {
                     match open_redis_connection() {
@@ -598,6 +618,33 @@ mod tests {
         // The redis crate treats a zero Duration as an error in
         // set_read_timeout/set_write_timeout, so these must stay > 0.
         assert!(redis_timeout_ms() > 0);
+    }
+
+    #[test]
+    fn retry_attempts_are_bounded() {
+        // A mis-set env var can never let retries amplify an outage
+        // indefinitely — the value is always clamped to [1, 5].
+        std::env::set_var("REDIS_AUTH_RETRY_ATTEMPTS", "0");
+        assert_eq!(redis_retry_attempts(), 1, "zero clamps to the floor");
+        std::env::set_var("REDIS_AUTH_RETRY_ATTEMPTS", "999");
+        assert_eq!(redis_retry_attempts(), 5, "huge value clamps to the cap");
+        std::env::set_var("REDIS_AUTH_RETRY_ATTEMPTS", "not-a-number");
+        assert_eq!(redis_retry_attempts(), 2, "garbage falls back to the default");
+        std::env::remove_var("REDIS_AUTH_RETRY_ATTEMPTS");
+        assert_eq!(redis_retry_attempts(), 2, "unset uses the default");
+    }
+
+    #[test]
+    fn retry_backoff_is_bounded() {
+        // Backoff stays within [1, 100] ms regardless of the env value.
+        std::env::set_var("REDIS_AUTH_RETRY_BACKOFF_MS", "0");
+        assert_eq!(redis_retry_backoff_ms(), 1, "zero clamps to the floor");
+        std::env::set_var("REDIS_AUTH_RETRY_BACKOFF_MS", "100000");
+        assert_eq!(redis_retry_backoff_ms(), 100, "huge value clamps to the cap");
+        std::env::set_var("REDIS_AUTH_RETRY_BACKOFF_MS", "garbage");
+        assert_eq!(redis_retry_backoff_ms(), 2, "garbage falls back to the default");
+        std::env::remove_var("REDIS_AUTH_RETRY_BACKOFF_MS");
+        assert_eq!(redis_retry_backoff_ms(), 2, "unset uses the default");
     }
 
     #[test]

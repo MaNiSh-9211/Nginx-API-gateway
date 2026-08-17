@@ -36,7 +36,9 @@ sha2         = "0.10.8"
 # Lazy statics
 lazy_static  = "1.5.0"
 
-# HTTP client removed — config polling moved to sidecar
+# OTLP/HTTP exporter for Grafana Cloud (LGTM) — rustls TLS, no system libs.
+# Runs on a background thread; never on the request hot path.
+ureq         = "3"
 
 # Lock-free concurrent structures
 crossbeam    = "0.8.4"

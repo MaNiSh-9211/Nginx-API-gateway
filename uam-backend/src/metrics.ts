@@ -4,6 +4,10 @@ import {
     redisCircuitBreaker,
     STATE_VALUE,
 } from './config/redisCircuitBreaker';
+import {
+    recordOtelHttpRequest,
+    recordOtelRedisMetrics,
+} from './otel';
 
 export const register = new client.Registry();
 client.collectDefaultMetrics({ register, prefix: 'uam_' });
@@ -24,11 +28,15 @@ export const httpRequestDuration = new client.Histogram({
 });
 
 // ── Redis dependency health + circuit-breaker metrics (§22) ──────────────────
-// Values are copied from the local circuit breaker at scrape time. The `*_total`
-// series are cumulative (monotonic) so Prometheus `rate()` works as expected.
+// The `*_total` series are monotonic counters so Prometheus `rate()` works as
+// expected; we copy deltas from the breaker at scrape time via `inc()`.
+// The `*_current` / latency / error-rate series are gauges.
 // No high-cardinality labels (no user/request/trace ids).
 
-const redisCounter = (name: string, help: string): client.Gauge =>
+const redisCounter = (name: string, help: string): client.Counter =>
+    new client.Counter({ name, help, registers: [register] });
+
+const redisGauge = (name: string, help: string): client.Gauge =>
     new client.Gauge({ name, help, registers: [register] });
 
 export const redisRequestsTotal = redisCounter(
@@ -59,36 +67,72 @@ export const redisCircuitRejectedTotal = redisCounter(
     'uam_redis_circuit_rejected_total',
     'Requests rejected because the circuit was OPEN or the concurrency limit was hit',
 );
-export const redisCircuitState = redisCounter(
+export const redisCircuitState = redisGauge(
     'uam_redis_circuit_state',
     'Redis circuit state (0=CLOSED,1=OPEN,2=HALF_OPEN)',
 );
-export const redisInflightCurrent = redisCounter(
+export const redisInflightCurrent = redisGauge(
     'uam_redis_inflight_current',
     'Current Redis operations in flight',
 );
-export const redisLatencyP99Us = redisCounter(
+export const redisLatencyP50Us = redisGauge(
+    'uam_redis_latency_p50_us',
+    'Rolling p50 Redis latency in microseconds',
+);
+export const redisLatencyP95Us = redisGauge(
+    'uam_redis_latency_p95_us',
+    'Rolling p95 Redis latency in microseconds',
+);
+export const redisLatencyP99Us = redisGauge(
     'uam_redis_latency_p99_us',
     'Rolling p99 Redis latency in microseconds',
 );
-export const redisErrorRateRolling = redisCounter(
+export const redisErrorRateRolling = redisGauge(
     'uam_redis_error_rate_rolling',
     'Rolling Redis error rate (0.0-1.0)',
 );
 
+/** Last scraped value per counter, used to emit monotonic deltas. */
+const lastCounterValues = new Map<client.Counter, number>();
+
+function setCounterDelta(counter: client.Counter, current: number): void {
+    const last = lastCounterValues.get(counter) ?? 0;
+    if (current > last) counter.inc(current - last);
+    lastCounterValues.set(counter, current);
+}
+
 /** Copy live breaker state into the exported metrics before a scrape. */
 export function refreshRedisCircuitMetrics(): void {
-    redisRequestsTotal.set(redisCircuitBreaker.requestsTotal);
-    redisSuccessTotal.set(redisCircuitBreaker.successTotal);
-    redisErrorsTotal.set(redisCircuitBreaker.errorsTotal);
-    redisTimeoutsTotal.set(redisCircuitBreaker.timeoutsTotal);
-    redisCircuitOpenTotal.set(redisCircuitBreaker.circuitOpenTotal);
-    redisCircuitHalfOpenTotal.set(redisCircuitBreaker.circuitHalfOpenTotal);
-    redisCircuitRejectedTotal.set(redisCircuitBreaker.circuitRejectedTotal);
+    setCounterDelta(redisRequestsTotal, redisCircuitBreaker.requestsTotal);
+    setCounterDelta(redisSuccessTotal, redisCircuitBreaker.successTotal);
+    setCounterDelta(redisErrorsTotal, redisCircuitBreaker.errorsTotal);
+    setCounterDelta(redisTimeoutsTotal, redisCircuitBreaker.timeoutsTotal);
+    setCounterDelta(redisCircuitOpenTotal, redisCircuitBreaker.circuitOpenTotal);
+    setCounterDelta(redisCircuitHalfOpenTotal, redisCircuitBreaker.circuitHalfOpenTotal);
+    setCounterDelta(redisCircuitRejectedTotal, redisCircuitBreaker.circuitRejectedTotal);
     redisCircuitState.set(STATE_VALUE[redisCircuitBreaker.currentState()]);
     redisInflightCurrent.set(redisCircuitBreaker.inflightCount());
+    redisLatencyP50Us.set(redisCircuitBreaker.p50Us());
+    redisLatencyP95Us.set(redisCircuitBreaker.p95Us());
     redisLatencyP99Us.set(redisCircuitBreaker.p99Us());
     redisErrorRateRolling.set(redisCircuitBreaker.errorRate());
+
+    // Mirror the same values into the OpenTelemetry exporter (Grafana Cloud).
+    recordOtelRedisMetrics({
+        requestsTotal: redisCircuitBreaker.requestsTotal,
+        successTotal: redisCircuitBreaker.successTotal,
+        errorsTotal: redisCircuitBreaker.errorsTotal,
+        timeoutsTotal: redisCircuitBreaker.timeoutsTotal,
+        circuitOpenTotal: redisCircuitBreaker.circuitOpenTotal,
+        circuitHalfOpenTotal: redisCircuitBreaker.circuitHalfOpenTotal,
+        circuitRejectedTotal: redisCircuitBreaker.circuitRejectedTotal,
+        circuitState: STATE_VALUE[redisCircuitBreaker.currentState()],
+        inflight: redisCircuitBreaker.inflightCount(),
+        p50Us: redisCircuitBreaker.p50Us(),
+        p95Us: redisCircuitBreaker.p95Us(),
+        p99Us: redisCircuitBreaker.p99Us(),
+        errorRate: redisCircuitBreaker.errorRate(),
+    });
 }
 
 /** Collapse dynamic path segments to keep Prometheus cardinality bounded. */
@@ -115,6 +159,7 @@ export function metricsMiddleware(req: Request, res: Response, next: NextFunctio
         });
         const seconds = Number(process.hrtime.bigint() - start) / 1e9;
         httpRequestDuration.observe({ method: req.method, route }, seconds);
+        recordOtelHttpRequest(req.method, route, String(res.statusCode), seconds);
     });
     next();
 }

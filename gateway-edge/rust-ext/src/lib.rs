@@ -20,6 +20,7 @@ mod backpressure;
 mod cache;
 pub mod config;
 mod load_balancing;
+pub mod otlp;
 mod rate_limit;
 pub mod redis_cb;
 mod router;
@@ -49,6 +50,7 @@ pub extern "C" fn init_extension() {
     config::start_config_sync();
     telemetry::start_telemetry_sync();
     rate_limit::start_rl_redis_sync();
+    otlp::start();
 }
 
 /// Log a loud warning when known dev/default secrets are in use.
@@ -99,6 +101,7 @@ pub unsafe extern "C" fn report_telemetry(
     upstream_ptr: *const c_char,
 ) {
     telemetry::record_request(status, latency_us);
+    otlp::record_request(status, latency_us as u64);
 
     let upstream = if !upstream_ptr.is_null() {
         CStr::from_ptr(upstream_ptr).to_str().unwrap_or("").to_string()
