@@ -97,11 +97,10 @@ pub fn start() {
     let Some(base) = endpoint() else { return };
     let Some(auth) = auth_header() else { return };
 
-    let agent = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(10)))
-        .http_status_as_error(false)
+    let agent = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(10))
         .build()
-        .new_agent();
+        .expect("reqwest blocking client");
 
     let (tx, rx) = mpsc::sync_channel::<SpanEvent>(8192);
     let _ = TRACE_TX.set(tx);
@@ -134,21 +133,20 @@ pub fn start() {
         .ok();
 }
 
-fn post_json(agent: &ureq::Agent, base: &str, path: &str, auth: &str, body: &str) {
+fn post_json(agent: &reqwest::blocking::Client, base: &str, path: &str, auth: &str, body: &str) {
     let url = format!("{base}{path}");
     match agent
         .post(&url)
         .header("Content-Type", "application/json")
         .header("Authorization", auth)
-        .send(body.to_string())
+        .body(body.to_string())
+        .send()
     {
-        Ok(mut resp) => {
-            if resp.status().as_u16() >= 300 {
-                eprintln!(
-                    "[otlp] {path} status {}: {}",
-                    resp.status().as_u16(),
-                    resp.body_mut().read_to_string().unwrap_or_default()
-                );
+        Ok(resp) => {
+            let code = resp.status().as_u16();
+            if code >= 300 {
+                let text = resp.text().unwrap_or_default();
+                eprintln!("[otlp] {path} status {code}: {text}");
             }
         }
         Err(e) => eprintln!("[otlp] {path} error: {e}"),
@@ -220,7 +218,7 @@ fn push_sum(out: &mut Vec<Value>, name: &str, extra: &[(&str, &str)], val: i64, 
 
 #[allow(clippy::too_many_arguments)]
 fn export_metrics(
-    agent: &ureq::Agent,
+    agent: &reqwest::blocking::Client,
     base: &str,
     auth: &str,
     prev_cb: &mut [u64; 7],
@@ -313,7 +311,7 @@ fn state_name(s: u32) -> &'static str {
     }
 }
 
-fn push_transition_log(agent: &ureq::Agent, base: &str, auth: &str, cur_state: u32, prev_state: u32, ts_ns: u128) {
+fn push_transition_log(agent: &reqwest::blocking::Client, base: &str, auth: &str, cur_state: u32, prev_state: u32, ts_ns: u128) {
     let (sev_num, sev_text, msg) = match cur_state {
         0 => (9, "INFO", "[gateway-edge] redis circuit CLOSED (recovered)"),
         1 => (13, "WARN", "[gateway-edge] redis circuit OPEN (tripped)"),
@@ -342,7 +340,7 @@ fn push_transition_log(agent: &ureq::Agent, base: &str, auth: &str, cur_state: u
     post_json(agent, base, "/v1/logs", auth, &doc.to_string());
 }
 
-fn push_startup_log(agent: &ureq::Agent, base: &str, auth: &str) {
+fn push_startup_log(agent: &reqwest::blocking::Client, base: &str, auth: &str) {
     let ts = now_ns().to_string();
     let doc = json!({
         "resourceLogs": [{
@@ -386,7 +384,7 @@ fn make_span(ev: SpanEvent) -> Value {
     })
 }
 
-fn drain_traces(agent: &ureq::Agent, base: &str, auth: &str, rx: &mpsc::Receiver<SpanEvent>) {
+fn drain_traces(agent: &reqwest::blocking::Client, base: &str, auth: &str, rx: &mpsc::Receiver<SpanEvent>) {
     let mut spans: Vec<Value> = Vec::with_capacity(64);
     while spans.len() < 128 {
         match rx.try_recv() {

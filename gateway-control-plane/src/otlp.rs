@@ -395,12 +395,26 @@ where
         let start = Instant::now();
         let method = req.method().as_str().to_string();
         let path = req.path().to_string();
+        // ADR-0060: request id from gateway when present; never log IP/UA.
+        let rid = req
+            .request()
+            .headers()
+            .get("x-request-id")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("-")
+            .to_string();
         let span = tracing::info_span!("http.request", method = %method, path = %path);
         let fut = self.service.call(req);
         Box::pin(
             async move {
+                println!("── REQ {rid} {method} {path}");
                 let res = fut.await;
                 let status = res.as_ref().map(|r| r.status().as_u16()).unwrap_or(0);
+                let ms = start.elapsed().as_millis();
+                println!("└ END {rid} status={status} {ms}ms");
+                if status >= 500 {
+                    tracing::error!(status = %status, path = %path, "request failed");
+                }
                 record_http_request(&method, &path, status, start.elapsed());
                 res
             }

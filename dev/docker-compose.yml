@@ -144,6 +144,9 @@ services:
       COOKIE_SAME_SITE: ${COOKIE_SAME_SITE}
       DEFAULT_HOME_REGION: ${UAM_DEFAULT_HOME_REGION}
       AUTH_OMIT_REFRESH_IN_BODY: "true"
+      # Prefer IPv4 DNS: Docker bridges lack IPv6 egress and Node tries AAAA
+      # first — OTLP exports to Grafana Cloud would time out.
+      NODE_OPTIONS: "--dns-result-order=ipv4first"
       REDIS_ENABLED: "true"
       REDIS_PORT: ${REDIS_PORT}
       REDIS_DB: "0"

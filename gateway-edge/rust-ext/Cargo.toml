@@ -38,7 +38,9 @@ lazy_static  = "1.5.0"
 
 # OTLP/HTTP exporter for Grafana Cloud (LGTM) — rustls TLS, no system libs.
 # Runs on a background thread; never on the request hot path.
-ureq         = "3"
+# reqwest-blocking mirrors the control-plane exporter stack, which has proven
+# dual-stack egress from Docker (ureq lacks happy-eyeballs and dies on AAAA).
+reqwest      = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 
 # Lock-free concurrent structures
 crossbeam    = "0.8.4"

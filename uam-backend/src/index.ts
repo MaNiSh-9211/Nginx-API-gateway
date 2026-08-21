@@ -124,6 +124,22 @@ app.use(passport.initialize());
 
 app.use(metricsMiddleware);
 
+// ── Request logging (ADR-0060 privacy policy) ────────────────────────────────
+// NO client IP, NO User-Agent in logs. Each request prints one visually
+// separated block: start line, then completion line with status + latency.
+// Errors/exceptions print their message under the END line when status >= 400.
+let uamReqSeq = 0;
+app.use((req: Request, res: Response, next: NextFunction) => {
+    const rid = (req.headers['x-request-id'] as string) || `uam-${++uamReqSeq}`;
+    const start = Date.now();
+    console.log(`── REQ ${rid} ${req.method} ${req.originalUrl.split('?')[0]}`);
+    res.on('finish', () => {
+        const ms = Date.now() - start;
+        console.log(`└ END ${rid} status=${res.statusCode} ${ms}ms`);
+    });
+    next();
+});
+
 // Apply rate limiting per-path for flexibility
 // Distributed rate limiting via Redis — runtime failures degrade to local
 // memory ONLY when RATE_LIMIT_LOCAL_FALLBACK=1; with =0 the request fails
@@ -200,7 +216,11 @@ app.use((req, res) => {
 });
 
 app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
-    console.error('Error:', err);
+    const rid = (req as any)._rid || '-';
+    console.log(`└ END ${rid} status=500 exception=${err.name}: ${err.message}`);
+    if (config.nodeEnv !== 'production' && err.stack) {
+        console.log(err.stack.split('\n').slice(0, 4).join('\n'));
+    }
     const isCors = err.message === 'Not allowed by CORS';
     res.status(isCors ? 403 : 500).json({
         success: false,
