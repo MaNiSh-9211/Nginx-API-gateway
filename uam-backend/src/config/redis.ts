@@ -30,16 +30,18 @@ function buildRedisOptions(role: RedisRole): RedisOptions {
         connectTimeout: redis.connectTimeoutMs,
         commandTimeout: redis.commandTimeoutMs,
         keepAlive: redis.keepAliveMs,
-        retryStrategy: (times) => {
-            if (times > redis.maxReconnectAttempts) {
-                console.log(`⚠️ Redis (${role}): max reconnect attempts reached`);
-                return null;
-            }
-            return Math.min(times * 200, 5_000);
-        },
+        // NEVER give up reconnecting: managed Redis (Upstash) drops idle TLS
+        // connections; a bounded retryStrategy let the pools die permanently
+        // ("Connection is closed") while Redis itself was perfectly healthy.
+        retryStrategy: (times) => Math.min(times * 200, 5_000),
         reconnectOnError: (err) => {
             const message = err.message;
-            return message.includes('READONLY') || message.includes('ECONNRESET');
+            return (
+                message.includes('READONLY')
+                || message.includes('ECONNRESET')
+                || message.includes('Connection is closed')
+                || message.includes('Stream isnt writeable')
+            );
         },
     };
 }
