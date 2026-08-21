@@ -258,5 +258,31 @@ pub fn prometheus_text() -> String {
          redis_error_rate_rolling {cb_err_rate:.4}\n"
     ));
 
+    // Auth revocation-snapshot sync (ADR-0054) — live proof of edge↔Redis:
+    // syncs tick every AUTH_SNAPSHOT_SYNC_SECS even with zero traffic.
+    let (snap_gen, snap_age, snap_revoked, snap_tv) = crate::revocation::stats();
+    let snap_ok  = crate::revocation::SYNC_OK_TOTAL.load(Ordering::Relaxed);
+    let snap_err = crate::revocation::SYNC_ERROR_TOTAL.load(Ordering::Relaxed);
+    out.push_str(&format!(
+        "# HELP gateway_auth_snapshot_syncs_total Successful revocation-snapshot syncs from Redis\n\
+         # TYPE gateway_auth_snapshot_syncs_total counter\n\
+         gateway_auth_snapshot_syncs_total {snap_ok}\n\
+         # HELP gateway_auth_snapshot_sync_errors_total Failed snapshot sync cycles\n\
+         # TYPE gateway_auth_snapshot_sync_errors_total counter\n\
+         gateway_auth_snapshot_sync_errors_total {snap_err}\n\
+         # HELP gateway_auth_snapshot_generation Snapshot publish generation\n\
+         # TYPE gateway_auth_snapshot_generation gauge\n\
+         gateway_auth_snapshot_generation {snap_gen}\n\
+         # HELP gateway_auth_snapshot_age_seconds Age of the local auth snapshot\n\
+         # TYPE gateway_auth_snapshot_age_seconds gauge\n\
+         gateway_auth_snapshot_age_seconds {snap_age}\n\
+         # HELP gateway_auth_snapshot_revoked_entries Locally cached revoked-token keys\n\
+         # TYPE gateway_auth_snapshot_revoked_entries gauge\n\
+         gateway_auth_snapshot_revoked_entries {snap_revoked}\n\
+         # HELP gateway_auth_snapshot_tv_floors Locally synced token-version floors\n\
+         # TYPE gateway_auth_snapshot_tv_floors gauge\n\
+         gateway_auth_snapshot_tv_floors {snap_tv}\n"
+    ));
+
     out
 }

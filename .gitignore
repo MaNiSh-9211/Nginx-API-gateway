@@ -91,3 +91,10 @@ dev/mongodb-uris.local.txt
 # Sub-repo git dirs (renamed during root-repo operations)
 **/.git_bak/
 
+
+# Local backups / env dumps (never commit)
+**/.env.bak
+**/*.bak
+**/*.orig
+env.txt
+docker_*.txt

@@ -144,13 +144,15 @@ export const closeRedis = async (): Promise<void> => {
 };
 
 export const pingRedisCache = async (): Promise<boolean> => {
-    if (!redisCache || !cacheReady) return false;
+    if (!redisCache) return false;
+    // No cacheReady gate: a client stuck connecting at cold-start must not
+    // poison readiness forever — the live ping (auto-(re)connects) decides.
     const res = await withCircuitBreaker(redisCircuitBreaker, () => redisCache!.ping());
     return res.ok && res.value === 'PONG';
 };
 
 export const pingRedisRateLimit = async (): Promise<boolean> => {
-    if (!redisRateLimit || !rateLimitReady) return false;
+    if (!redisRateLimit) return false;
     const res = await withCircuitBreaker(redisCircuitBreaker, () => redisRateLimit!.ping());
     return res.ok && res.value === 'PONG';
 };

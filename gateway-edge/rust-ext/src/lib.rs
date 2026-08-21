@@ -23,6 +23,7 @@ mod load_balancing;
 pub mod otlp;
 mod rate_limit;
 pub mod redis_cb;
+pub mod revocation;
 mod router;
 pub mod telemetry;
 mod waf;
@@ -34,12 +35,16 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 use waf::WafDecision;
 
 // ── Request ID counter ────────────────────────────────────────────────────────
 
 /// Monotonic per-worker request counter for X-Request-ID generation
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Insecure secret warning deduplication: prints at most once per worker process
+static INSECURE_WARNING_PRINTED: OnceLock<()> = OnceLock::new();
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
@@ -50,35 +55,38 @@ pub extern "C" fn init_extension() {
     config::start_config_sync();
     telemetry::start_telemetry_sync();
     rate_limit::start_rl_redis_sync();
+    revocation::start_sync();
     otlp::start();
 }
 
 /// Log a loud warning when known dev/default secrets are in use.
 /// Set `GATEWAY_REFUSE_INSECURE_SECRETS=1` to abort worker startup in prod.
 fn warn_insecure_secrets() {
-    const DEV_SECRETS: &[&str] = &[
-        "super_secret_key_for_hmac_sha256_change_in_prod",
-        "super_secret_key_for_hmac_sha256",
-        "default_secret",
-        "change_me_use_a_long_random_secret_at_least_32_chars",
-    ];
-    let secret = std::env::var("JWT_SECRET").unwrap_or_default();
-    let insecure = secret.is_empty()
-        || DEV_SECRETS.iter().any(|d| secret == *d);
-    if !insecure {
-        return;
-    }
-    eprintln!(
-        "gateway: WARNING — JWT_SECRET is empty or a known dev/default value; \
-         rotate before production (ADR-0013, ADR-0041)"
-    );
-    if std::env::var("GATEWAY_REFUSE_INSECURE_SECRETS")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-    {
-        eprintln!("gateway: FATAL — GATEWAY_REFUSE_INSECURE_SECRETS=1 and JWT_SECRET is insecure");
-        std::process::abort();
-    }
+    let _ = INSECURE_WARNING_PRINTED.get_or_init(|| {
+        const DEV_SECRETS: &[&str] = &[
+            "super_secret_key_for_hmac_sha256_change_in_prod",
+            "super_secret_key_for_hmac_sha256",
+            "default_secret",
+            "change_me_use_a_long_random_secret_at_least_32_chars",
+        ];
+        let secret = std::env::var("JWT_SECRET").unwrap_or_default();
+        let insecure = secret.is_empty()
+            || DEV_SECRETS.iter().any(|d| secret == *d);
+        if !insecure {
+            return;
+        }
+        eprintln!(
+            "gateway: WARNING — JWT_SECRET is empty or a known dev/default value; \
+             rotate before production (ADR-0013, ADR-0041)"
+        );
+        if std::env::var("GATEWAY_REFUSE_INSECURE_SECRETS")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+        {
+            eprintln!("gateway: FATAL — GATEWAY_REFUSE_INSECURE_SECRETS=1 and JWT_SECRET is insecure");
+            std::process::abort();
+        }
+    });
 }
 
 /// Called after each request from NGINX `log_by_lua_block`.

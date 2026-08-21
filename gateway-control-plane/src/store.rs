@@ -58,7 +58,10 @@ impl Store {
         };
         let pool = PgPoolOptions::new()
             .max_connections(4)
-            .acquire_timeout(std::time::Duration::from_secs(5))
+            // Cold TLS handshakes to managed Postgres (Aiven ap-south-1) can
+            // take >5 s; a short timeout here would silently disable the
+            // durable store on every restart.
+            .acquire_timeout(std::time::Duration::from_secs(20))
             .connect(&url)
             .await?;
 
