@@ -19,6 +19,7 @@ mod auth;
 mod backpressure;
 mod cache;
 pub mod config;
+pub mod health;
 mod load_balancing;
 pub mod otlp;
 mod rate_limit;
@@ -56,6 +57,7 @@ pub extern "C" fn init_extension() {
     telemetry::start_telemetry_sync();
     rate_limit::start_rl_redis_sync();
     revocation::start_sync();
+    health::start_active_checks();
     otlp::start();
 }
 

@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 
 use crate::config::{ServiceConfig, Upstream};
+use crate::health::is_healthy;
 
 use super::circuit_breaker::is_upstream_open;
 use super::ema::get_ema;
@@ -63,7 +64,10 @@ fn collect_healthy_distinct(upstreams: &[Upstream], ring: &[usize]) -> HashSet<u
         if !seen.insert(idx) {
             continue;
         }
-        if !is_upstream_open(&upstreams[idx].address) {
+        let addr = &upstreams[idx].address;
+        // Usable = passive circuit breaker closed AND active probes consider
+        // it up (ADR-0061). Unknown-by-active-checks addresses are optimistically up.
+        if !is_upstream_open(addr) && is_healthy(addr) {
             healthy.insert(idx);
         }
     }

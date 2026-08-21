@@ -55,6 +55,30 @@ pub struct ServiceConfig {
 fn default_rate_limit() -> usize { 1_000 }
 fn default_true() -> bool { true }
 
+/// Active health-check policy (ADR-0061) — mirrored from the gateway schema
+/// so the field survives POST /config → GET /config round-trips. The control
+/// plane itself does not probe anything; edge workers consume this.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct HealthCheckConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_health_path")]
+    pub path: String,
+    #[serde(default = "default_health_interval")]
+    pub interval_secs: u64,
+    #[serde(default = "default_health_timeout")]
+    pub timeout_ms: u64,
+    #[serde(default = "default_health_unhealthy")]
+    pub unhealthy_threshold: u32,
+    #[serde(default = "default_health_healthy")]
+    pub healthy_threshold: u32,
+}
+fn default_health_path() -> String { "/health".to_string() }
+fn default_health_interval() -> u64 { 10 }
+fn default_health_timeout() -> u64 { 2_000 }
+fn default_health_unhealthy() -> u32 { 3 }
+fn default_health_healthy() -> u32 { 2 }
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ConfigSnapshot {
     pub version: String,
@@ -77,6 +101,8 @@ pub struct ConfigSnapshot {
     pub services: HashMap<String, ServiceConfig>,
     #[serde(default)]
     pub routes: Vec<Route>,
+    #[serde(default)]
+    pub health_check: Option<HealthCheckConfig>,
 }
 fn default_concurrency() -> usize { 10_000 }
 fn default_jwt() -> String { "super_secret_key_for_hmac_sha256".to_string() }
@@ -803,6 +829,7 @@ fn load_initial_config() -> ConfigSnapshot {
         expected_audience: default_audience(),
         services: HashMap::new(),
         routes: Vec::new(),
+        health_check: None,
     };
 
     match fs::read_dir(&config_dir) {
@@ -1084,6 +1111,7 @@ mod tests {
             expected_audience: default_audience(),
             services: HashMap::new(),
             routes: Vec::new(),
+            health_check: None,
         };
         let json = serde_json::to_string(&snap).unwrap();
         assert!(!json.contains("TOP-SECRET-VALUE"), "jwt_secret leaked in JSON");
@@ -1102,6 +1130,7 @@ mod tests {
             expected_audience: default_audience(),
             services: HashMap::new(),
             routes: Vec::new(),
+            health_check: None,
         };
         let mut store = ConfigStore::new(base.clone(), 3);
         for v in 2..=10 {
@@ -1124,6 +1153,7 @@ mod tests {
             expected_audience: default_audience(),
             services: HashMap::new(),
             routes: Vec::new(),
+            health_check: None,
         };
         let mut store = ConfigStore::new(base.clone(), 5);
         let mut v2 = base.clone();
@@ -1145,6 +1175,7 @@ mod tests {
             expected_audience: default_audience(),
             services: HashMap::new(),
             routes: Vec::new(),
+            health_check: None,
         };
         let mut store = ConfigStore::new(base, 5);
         assert!(store.pop().is_none(), "must not pop the only version");

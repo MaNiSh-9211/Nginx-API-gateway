@@ -284,5 +284,18 @@ pub fn prometheus_text() -> String {
          gateway_auth_snapshot_tv_floors {snap_tv}\n"
     ));
 
+    // Active health checks (ADR-0061) — per-upstream up/down from probing.
+    out.push_str(&crate::health::prometheus_fragment());
+    let hc_checks = crate::health::CHECKS_TOTAL.load(Ordering::Relaxed);
+    let hc_fails  = crate::health::CHECK_FAILURES_TOTAL.load(Ordering::Relaxed);
+    out.push_str(&format!(
+        "# HELP gateway_active_health_checks_total Active health probes sent\n\
+         # TYPE gateway_active_health_checks_total counter\n\
+         gateway_active_health_checks_total {hc_checks}\n\
+         # HELP gateway_active_health_failures_total Failed active probes\n\
+         # TYPE gateway_active_health_failures_total counter\n\
+         gateway_active_health_failures_total {hc_fails}\n"
+    ));
+
     out
 }

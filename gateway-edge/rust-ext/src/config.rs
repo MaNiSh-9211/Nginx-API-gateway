@@ -49,6 +49,29 @@ pub struct ServiceConfig {
     pub require_auth: bool,
 }
 
+/// Active health-check policy (ADR-0061). Absent = disabled.
+#[derive(Debug, Deserialize, Clone)]
+pub struct HealthCheckConfig {
+    #[serde(default = "hc_true")]
+    pub enabled: bool,
+    #[serde(default = "hc_path")]
+    pub path: String,
+    #[serde(default = "hc_interval")]
+    pub interval_secs: u64,
+    #[serde(default = "hc_timeout")]
+    pub timeout_ms: u64,
+    #[serde(default = "hc_unhealthy")]
+    pub unhealthy_threshold: u32,
+    #[serde(default = "hc_healthy")]
+    pub healthy_threshold: u32,
+}
+fn hc_true() -> bool { true }
+fn hc_path() -> String { "/health".to_string() }
+fn hc_interval() -> u64 { 10 }
+fn hc_timeout() -> u64 { 2_000 }
+fn hc_unhealthy() -> u32 { 3 }
+fn hc_healthy() -> u32 { 2 }
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct GatewayConfig {
     pub version: String,
@@ -78,6 +101,10 @@ pub struct GatewayConfig {
 
     pub services: HashMap<String, ServiceConfig>,
     pub routes: Vec<Route>,
+
+    /// Active upstream health probing (ADR-0061). None = disabled.
+    #[serde(default)]
+    pub health_check: Option<HealthCheckConfig>,
 }
 
 fn default_secret() -> String { "default_secret".to_string() }
@@ -95,6 +122,7 @@ impl Default for GatewayConfig {
             expected_audience: default_audience(),
             services: HashMap::new(),
             routes: Vec::new(),
+            health_check: None,
         }
     }
 }
