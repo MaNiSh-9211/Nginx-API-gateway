@@ -155,6 +155,8 @@ services:
       # Prefer IPv4 DNS: Docker bridges lack IPv6 egress and Node tries AAAA
       # first — OTLP exports to Grafana Cloud would time out.
       NODE_OPTIONS: "--dns-result-order=ipv4first"
+      # /metrics requires Bearer token when set (empty = open, loopback only)
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
       REDIS_ENABLED: "true"
       REDIS_PORT: ${REDIS_PORT}
       REDIS_DB: "0"

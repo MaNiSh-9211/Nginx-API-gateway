@@ -17,6 +17,11 @@ scrape_configs:
     static_configs:
       - targets: ["control-plane:8081"]
 
+  # uam /metrics is Bearer-gated via METRICS_TOKEN (dev/.env). When enabled,
+  # add to this job:
+  #   authorization:
+  #     type: Bearer
+  #     credentials: <METRICS_TOKEN value>
   - job_name: uam-backend
     metrics_path: /metrics
     static_configs:

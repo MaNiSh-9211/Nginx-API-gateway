@@ -799,7 +799,7 @@ async fn post_telemetry(payload: web::Json<TelemetryPayload>) -> impl Responder 
 
 // ── Health ────────────────────────────────────────────────────────────────────
 
-async fn health(state: web::Data<AppState>) -> impl Responder {
+async fn health(req: HttpRequest, state: web::Data<AppState>) -> impl Responder {
     // Dependency-health evaluator: surface the local Redis circuit state and
     // the config store (Postgres) so orchestrators can distinguish a healthy
     // control plane from one degrading toward an OPEN Redis circuit.
@@ -814,6 +814,17 @@ async fn health(state: web::Data<AppState>) -> impl Responder {
         Some(_) => "unreachable",
         None => "disabled",
     };
+
+    // ADR-0069: dependency internals are sensitive topology data. Public
+    // callers get a generic healthy body; holders of CONFIG_READ_TOKEN get
+    // the full breakdown. HTTP status stays 200 either way so probes work.
+    if !verify_config_read_token(&req) {
+        return HttpResponse::Ok().json(serde_json::json!({
+            "status": "healthy",
+            "service": "control-plane",
+        }));
+    }
+
     HttpResponse::Ok().json(serde_json::json!({
         "status":        "healthy",
         "service":       "control-plane",
