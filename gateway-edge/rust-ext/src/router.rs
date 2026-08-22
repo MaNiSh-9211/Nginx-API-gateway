@@ -29,6 +29,8 @@ pub struct RouteMeta {
     pub service_name: String,
     /// "fast" | "normal" | "slow" (ADR-0062).
     pub tier: String,
+    /// Per-route body validation (ADR-0064), shared-arc to keep the tree cheap.
+    pub validation: Option<std::sync::Arc<crate::validate::ValidationConfig>>,
 }
 
 lazy_static::lazy_static! {
@@ -52,6 +54,7 @@ pub fn update_router(config: &GatewayConfig) {
         let meta = RouteMeta {
             service_name: route.service_name.clone(),
             tier: route.effective_tier().to_string(),
+            validation: route.validation.as_ref().map(|v| std::sync::Arc::new(v.clone())),
         };
         let path = if route.path_prefix.ends_with('/') {
             format!("{}*path", route.path_prefix)
@@ -69,16 +72,18 @@ pub struct ResolvedRoute {
     pub region: String,
     /// Timeout-policy tier for this route ("fast" | "normal" | "slow").
     pub tier: String,
+    /// Per-route body validation policy (ADR-0064).
+    pub validation: Option<std::sync::Arc<crate::validate::ValidationConfig>>,
 }
 
 pub fn route_request(path: &str, identity: Option<&UserIdentity>, _cb_state: i32) -> Result<ResolvedRoute, i32> {
     let config = GLOBAL_CONFIG.load();
-    let (service, tier) = find_service(path, &config);
+    let (service, tier, validation) = find_service(path, &config);
 
     let identity_region = identity.and_then(|id| id.home_region.as_deref());
     let region = resolve_region(identity_region, current_region())?;
 
-    Ok(ResolvedRoute { service, region, tier })
+    Ok(ResolvedRoute { service, region, tier, validation })
 }
 
 /// Decide which regional upstream pool serves this request, enforcing data
@@ -109,14 +114,17 @@ fn resolve_region(identity_region: Option<&str>, current: &str) -> Result<String
     Ok(required)
 }
 
-/// O(1) Radix tree match: find the service + tier for a given path.
-fn find_service(path: &str, config: &GatewayConfig) -> (Option<ServiceConfig>, String) {
+/// O(1) Radix tree match: find the service + tier + validation for a path.
+fn find_service(
+    path: &str,
+    config: &GatewayConfig,
+) -> (Option<ServiceConfig>, String, Option<std::sync::Arc<crate::validate::ValidationConfig>>) {
     let router = GLOBAL_ROUTER.load();
     if let Ok(matched) = router.at(path) {
         let svc = config.services.get(matched.value.service_name.as_str()).cloned();
-        (svc, matched.value.tier.clone())
+        (svc, matched.value.tier.clone(), matched.value.validation.clone())
     } else {
-        (None, "normal".to_string())
+        (None, "normal".to_string(), None)
     }
 }
 

@@ -56,10 +56,11 @@ pub struct Route {
     #[serde(default)]
     pub strip_prefix: bool,
     /// Timeout-policy tier (ADR-0062): "fast" | "normal" | "slow".
-    /// Unknown/absent → "normal". Executed by the matching nginx internal
-    /// location (@up_fast / @up_normal / @up_slow).
     #[serde(default)]
     pub tier: String,
+    /// Per-route body validation policy (ADR-0064). Absent = no validation.
+    #[serde(default)]
+    pub validation: Option<crate::validate::ValidationConfig>,
 }
 
 impl Route {
@@ -313,6 +314,7 @@ mod tests {
             service_name: "s".into(),
             strip_prefix: false,
             tier: String::new(),
+            validation: None,
         });
         assert!(is_config_ready_for(&cfg));
     }

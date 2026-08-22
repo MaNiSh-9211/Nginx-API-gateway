@@ -23,6 +23,7 @@ void  init_extension(void);
 int   process_request(const char* auth_header, const char* path,
                       const char* user_agent,  const char* body, size_t body_len,
                       const char* client_ip,   const char* canary_hint,
+                      const char* content_type,
                       char* region_out,   size_t region_out_len,
                       char* upstream_out, size_t upstream_out_len,
                       char* req_id_out,   size_t req_id_out_len,
@@ -123,7 +124,7 @@ function M.access()
     -- Canary stickiness hint: X-Canary header or gateway_canary cookie (ADR-0063).
     local canary = var.http_x_canary or var.cookie_gateway_canary or ""
     local code = tonumber(lib.process_request(
-        auth, path, ua, body, #body, ip, canary,
+        auth, path, ua, body, #body, ip, canary, var.content_type or "",
         region_buf,   REGION_LEN,
         upstream_buf, UPSTREAM_LEN,
         reqid_buf,    REQID_LEN,

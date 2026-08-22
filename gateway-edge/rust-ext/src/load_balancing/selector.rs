@@ -154,6 +154,12 @@ mod tests {
     use super::*;
     use crate::config::{CanaryPolicy, ServiceConfig, Upstream};
     use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    /// Tests share one cross-worker SHM region for active-health flags; this
+    /// mutex serializes every test that reads canary health so concurrent
+    /// force_set_for_test() calls cannot poison each other's expectations.
+    static CANARY_SHM_LOCK: Mutex<()> = Mutex::new(());
 
     fn svc_with(upstreams: Vec<Upstream>, canary: Option<CanaryPolicy>) -> ServiceConfig {
         let mut regional = HashMap::new();
@@ -191,6 +197,7 @@ mod tests {
 
     #[test]
     fn sticky_hint_pins_to_canary_version() {
+        let _g = CANARY_SHM_LOCK.lock().unwrap();
         let svc = svc_with(
             vec![up("stable-a", 9, "stable"), up("canary-b", 1, "v2")],
             Some(CanaryPolicy { version: "v2".into(), percent: 0 }), // 0% roll-out
@@ -215,6 +222,7 @@ mod tests {
 
     #[test]
     fn full_percent_puts_everyone_on_canary() {
+        let _g = CANARY_SHM_LOCK.lock().unwrap();
         let svc = svc_with(
             vec![up("stable-a", 9, "stable"), up("canary-b", 1, "v2")],
             Some(CanaryPolicy { version: "v2".into(), percent: 100 }),
@@ -227,6 +235,7 @@ mod tests {
 
     #[test]
     fn partial_percent_splits_population() {
+        let _g = CANARY_SHM_LOCK.lock().unwrap();
         let svc = svc_with(
             vec![up("stable-a", 1, "stable"), up("canary-b", 1, "v2")],
             Some(CanaryPolicy { version: "v2".into(), percent: 25 }),
@@ -245,6 +254,7 @@ mod tests {
 
     #[test]
     fn falls_back_when_canary_member_unhealthy() {
+        let _g = CANARY_SHM_LOCK.lock().unwrap();
         let svc = svc_with(
             vec![up("stable-a", 9, "stable"), up("canary-b", 1, "v2")],
             Some(CanaryPolicy { version: "v2".into(), percent: 100 }),

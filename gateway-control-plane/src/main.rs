@@ -55,6 +55,10 @@ pub struct Route {
     /// Timeout-policy tier: "fast" | "normal" | "slow" (ADR-0062).
     #[serde(default)]
     pub tier: String,
+    /// Per-route body validation policy (ADR-0064) — mirrored opaquely so the
+    /// field survives round-trips; the gateway owns the typed schema.
+    #[serde(default)]
+    pub validation: Option<serde_json::Value>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -875,6 +879,7 @@ fn load_initial_config() -> ConfigSnapshot {
                     service_name: "default-service".to_string(),
                     strip_prefix: false,
             tier: String::new(),
+            validation: None,
                 });
             }
         }
@@ -912,6 +917,7 @@ fn build_fallback(snap: &mut ConfigSnapshot) {
         service_name: "default-service".to_string(),
         strip_prefix: false,
             tier: String::new(),
+            validation: None,
     });
 }
 

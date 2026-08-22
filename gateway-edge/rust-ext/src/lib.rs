@@ -27,6 +27,7 @@ pub mod redis_cb;
 pub mod revocation;
 mod router;
 pub mod telemetry;
+mod validate;
 mod waf;
 
 // Re-export for external consumers / tests.
@@ -189,6 +190,7 @@ pub unsafe extern "C" fn process_request(
     body_len:         usize,
     client_ip_ptr:    *const c_char,
     canary_hint_ptr:  *const c_char,
+    content_type_ptr: *const c_char,
     region_out_ptr:   *mut c_char,
     region_out_len:   usize,
     upstream_out_ptr: *mut c_char,
@@ -238,6 +240,11 @@ pub unsafe extern "C" fn process_request(
     // Canary stickiness hint (header/cookie value computed in Lua, ADR-0063).
     let canary_hint = if !canary_hint_ptr.is_null() {
         std::str::from_utf8(CStr::from_ptr(canary_hint_ptr).to_bytes()).unwrap_or("")
+    } else {
+        ""
+    };
+    let content_type = if !content_type_ptr.is_null() {
+        std::str::from_utf8(CStr::from_ptr(content_type_ptr).to_bytes()).unwrap_or("")
     } else {
         ""
     };
@@ -291,6 +298,22 @@ pub unsafe extern "C" fn process_request(
     // Timeout-policy tier for nginx's matching internal location (ADR-0062).
     if !tier_out_ptr.is_null() {
         write_c_string(&resolved.tier, tier_out_ptr, tier_out_len);
+    }
+
+    // ── 4b. Per-route body validation (ADR-0064) ───────────────────────────
+    if let Some(policy) = resolved.validation.as_deref() {
+        match validate::validate_body(policy, content_type, &body) {
+            Ok(()) => {}
+            Err(v) => {
+                let (status, reason) = v.response();
+                eprintln!(
+                    "[validate] reject {status} {reason} uri={}",
+                    path.split('?').next().unwrap_or(path)
+                );
+                backpressure::release();
+                return status as i32;
+            }
+        }
     }
     // 4. Auth enforcement
     if service.require_auth && identity.is_none() {
