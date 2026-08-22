@@ -25,13 +25,7 @@ http {
 
     
 
-        add_header X-Content-Type-Options "nosniff" always;
-        add_header X-Frame-Options "DENY" always;
-        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-        add_header Permissions-Policy "geolocation=(), microphone=(), camera=()" always;
-        add_header Strict-Transport-Security $hsts_header always;
-        add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://lh3.googleusercontent.com https://avatars.githubusercontent.com https://secure.gravatar.com https://www.gravatar.com; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'$csp_upgrade" always;
-        add_header Cross-Origin-Opener-Policy "same-origin" always;
+        include /etc/nginx/cloudflare/security-headers.conf;
 
         root /usr/share/nginx/html;
         index index.html;
@@ -48,6 +42,7 @@ http {
         # (valid=10s). A literal proxy_pass freezes the upstream IP at startup —
         # recreating the gateway container then 502s every API call.
         location /api/ {
+            include /etc/nginx/cloudflare/security-headers.conf;
             resolver ${NGINX_RESOLVER} valid=10s ipv6=off;
             resolver_timeout 5s;
             set $gateway_upstream_base "${GATEWAY_PROXY_BASE}";

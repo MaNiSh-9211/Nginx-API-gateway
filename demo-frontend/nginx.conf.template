@@ -17,6 +17,10 @@ http {
 
         root /usr/share/nginx/html;
 
+        # Base security headers for all responses (ADR-0069). Locations that
+        # declare their own add_header re-include this file explicitly.
+        include /etc/nginx/cloudflare/security-headers.conf;
+
         include /etc/nginx/cloudflare/cdn-static.conf;
 
         location / {
@@ -28,6 +32,7 @@ http {
 
         # UAM auth through gateway (same-origin cookies)
         location /api/ {
+            include /etc/nginx/cloudflare/security-headers.conf;
             add_header Cache-Control "no-store, private" always;
             add_header CDN-Cache-Control "no-store" always;
             proxy_pass ${GATEWAY_PROXY_URL}$request_uri;

@@ -72,6 +72,6 @@
     "concurrently": "^9.1.2",
     "nodemon": "^3.1.9",
     "typescript": "npm:@typescript/typescript6@^6.0.1",
-    "typescript-7": "npm:typescript@rc"
+    "typescript-7": "npm:typescript@7.0.1-rc"
   }
 }

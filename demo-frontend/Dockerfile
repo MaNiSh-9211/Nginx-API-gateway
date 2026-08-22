@@ -15,3 +15,4 @@ HEALTHCHECK --interval=10s --timeout=3s --start-period=3s --retries=5 \
   CMD wget -qO- http://127.0.0.1:80/ >/dev/null 2>&1 || exit 1
 
 ENTRYPOINT ["/docker-entrypoint.sh"]
+COPY cloudflare/security-headers.conf /etc/nginx/cloudflare/security-headers.conf
