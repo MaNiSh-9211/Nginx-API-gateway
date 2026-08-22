@@ -21,6 +21,7 @@ use sha2::Sha256;
 mod redis_cb;
 mod store;
 mod otlp;
+mod config_validate;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -440,7 +441,8 @@ async fn get_config(req: HttpRequest, state: web::Data<AppState>) -> impl Respon
     HttpResponse::Ok().json(snap.as_ref())
 }
 
-/// POST /config — push a new config version (requires X-Admin-Signature)
+/// POST /config — push a new config version (requires X-Admin-Signature).
+/// Append `?dry_run=1` to preview validation + diff without applying.
 async fn post_config(
     req: HttpRequest,
     state: web::Data<AppState>,
@@ -468,6 +470,38 @@ async fn post_config(
     new_snap.jwt_secret = jwt_secret;
     // jwt_keys come from the request body (operator-managed rotation keys)
     // They are never serialized back out via GET /config
+
+    // ── Deep validation + diff (ADR-0065, gap #7) ─────────────────────────
+    // Errors reject the push outright; `?dry_run=1` previews without applying.
+    let report = config_validate::validate_config(&new_snap);
+    let diff = {
+        let store_lock = state.store.lock();
+        match store_lock {
+            Ok(store) => config_validate::diff_report(store.current(), &new_snap),
+            Err(_) => return HttpResponse::InternalServerError().body("store lock"),
+        }
+    };
+    let dry_run = req
+        .uri()
+        .query()
+        .map(|q| q.split('&').any(|kv| kv == "dry_run=1" || kv == "dry_run=true"))
+        .unwrap_or(false);
+    if dry_run {
+        return HttpResponse::Ok().json(serde_json::json!({
+            "dry_run": true,
+            "version": new_snap.version,
+            "validation": report,
+            "diff": diff,
+        }));
+    }
+    if !report.valid {
+        log::warn!("POST /config rejected: {} validation error(s)", report.errors.len());
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "config validation failed",
+            "validation": report,
+            "diff": diff,
+        }));
+    }
 
     let version = new_snap.version.clone();
     let actor_ip = req
@@ -498,7 +532,12 @@ async fn post_config(
             store.push(new_snap.clone());
             state.live.store(Arc::new(new_snap));
             log::info!("Config updated to version {version}");
-            HttpResponse::Ok().body(format!("Config updated to version {version}"))
+            HttpResponse::Ok().json(serde_json::json!({
+                "status": "applied",
+                "version": version,
+                "warnings": report.warnings,
+                "diff": diff,
+            }))
         }
         Err(_) => HttpResponse::InternalServerError().body("Config store lock poisoned"),
     }
