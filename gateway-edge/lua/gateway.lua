@@ -22,12 +22,13 @@ ffi.cdef [[
 void  init_extension(void);
 int   process_request(const char* auth_header, const char* path,
                       const char* user_agent,  const char* body, size_t body_len,
-                      const char* client_ip,
+                      const char* client_ip,   const char* canary_hint,
                       char* region_out,   size_t region_out_len,
                       char* upstream_out, size_t upstream_out_len,
                       char* req_id_out,   size_t req_id_out_len,
                       char* user_id_out,  size_t user_id_out_len,
-                      char* home_region_out, size_t home_region_out_len);
+                      char* home_region_out, size_t home_region_out_len,
+                      char* tier_out,     size_t tier_out_len);
 void  report_telemetry(int status, size_t latency_us, const char* upstream);
 void  release_slot(void);
 int   is_ready(void);
@@ -46,6 +47,7 @@ local M = { lib = lib }
 -- these is safe and avoids a per-request allocation.
 local REGION_LEN, UPSTREAM_LEN, REQID_LEN = 16, 256, 40
 local USER_ID_LEN, HOME_REGION_LEN = 128, 16
+local TIER_LEN = 16
 
 -- Bytes of the request body handed to the WAF. Must match MAX_BODY_SCAN_LEN in
 -- gateway/rust-ext/src/waf.rs — the Rust WAF only scans the first 8KB, so we
@@ -56,6 +58,7 @@ local upstream_buf = ffi.new("char[?]", UPSTREAM_LEN)
 local reqid_buf    = ffi.new("char[?]", REQID_LEN)
 local user_id_buf  = ffi.new("char[?]", USER_ID_LEN)
 local home_region_buf = ffi.new("char[?]", HOME_REGION_LEN)
+local tier_buf     = ffi.new("char[?]", TIER_LEN)
 
 local ERROR_BODIES = {
     [400] = '{"error":"Bad Request"}',
@@ -117,13 +120,16 @@ function M.access()
     -- Pass the body length explicitly (#body counts embedded NUL bytes). The Rust
     -- side reconstructs the body from ptr+len instead of treating it as a C string,
     -- so a payload after a NUL byte cannot bypass WAF body inspection.
+    -- Canary stickiness hint: X-Canary header or gateway_canary cookie (ADR-0063).
+    local canary = var.http_x_canary or var.cookie_gateway_canary or ""
     local code = tonumber(lib.process_request(
-        auth, path, ua, body, #body, ip,
+        auth, path, ua, body, #body, ip, canary,
         region_buf,   REGION_LEN,
         upstream_buf, UPSTREAM_LEN,
         reqid_buf,    REQID_LEN,
         user_id_buf,  USER_ID_LEN,
-        home_region_buf, HOME_REGION_LEN))
+        home_region_buf, HOME_REGION_LEN,
+        tier_buf,     TIER_LEN))
 
     local req_id = ffi.string(reqid_buf)
     ngx.ctx.request_id = req_id
@@ -159,6 +165,9 @@ function M.access()
     ngx.ctx.admitted   = true
     var.target_region   = ffi.string(region_buf)
     var.target_upstream = ffi.string(upstream_buf)
+    local tier = ffi.string(tier_buf)
+    if tier ~= "fast" and tier ~= "slow" then tier = "normal" end
+    var.target_tier     = tier
     local uid = ffi.string(user_id_buf)
     local home = ffi.string(home_region_buf)
     var.gateway_user_id = uid
@@ -169,6 +178,10 @@ function M.access()
     if home ~= "" then
         ngx.req.set_header("X-Home-Region", home)
     end
+
+    -- Jump to the timeout-policy location for this route (ADR-0062).
+    -- Named locations carry per-tier proxy budgets; method/body preserved.
+    return ngx.exec("@up_" .. tier)
 end
 
 -- Runs for every request to `location /` (success or early-rejected).

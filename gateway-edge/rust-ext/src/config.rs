@@ -31,6 +31,22 @@ pub struct Upstream {
     pub address: String,
     #[serde(default)]
     pub weight: usize,
+    /// Version label for canary routing (ADR-0063), e.g. "canary" | "stable".
+    #[serde(default)]
+    pub version: String,
+}
+
+/// Canary rollout policy (ADR-0063). Absent = whole pool treated as stable.
+/// Stickiness convention: header `X-Canary` or cookie `gateway_canary` set to
+/// the policy version pins that client to canary members.
+#[derive(Debug, Deserialize, Clone)]
+pub struct CanaryPolicy {
+    pub version: String,
+    #[serde(default)]
+    pub percent: u32,
+}
+impl CanaryPolicy {
+    pub fn effective_percent(&self) -> u32 { self.percent.min(100) }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -39,6 +55,20 @@ pub struct Route {
     pub service_name: String,
     #[serde(default)]
     pub strip_prefix: bool,
+    /// Timeout-policy tier (ADR-0062): "fast" | "normal" | "slow".
+    /// Unknown/absent → "normal". Executed by the matching nginx internal
+    /// location (@up_fast / @up_normal / @up_slow).
+    #[serde(default)]
+    pub tier: String,
+}
+
+impl Route {
+    pub fn effective_tier(&self) -> &str {
+        match self.tier.as_str() {
+            "fast" | "slow" => self.tier.as_str(),
+            _ => "normal",
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -47,6 +77,8 @@ pub struct ServiceConfig {
     pub rate_limit_max: usize,
     pub regional_upstreams: HashMap<String, Vec<Upstream>>,
     pub require_auth: bool,
+    #[serde(default)]
+    pub canary: Option<CanaryPolicy>,
 }
 
 /// Active health-check policy (ADR-0061). Absent = disabled.
@@ -280,6 +312,7 @@ mod tests {
             path_prefix: "/".into(),
             service_name: "s".into(),
             strip_prefix: false,
+            tier: String::new(),
         });
         assert!(is_config_ready_for(&cfg));
     }

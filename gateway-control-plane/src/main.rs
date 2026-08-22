@@ -32,8 +32,19 @@ pub struct Upstream {
     pub address: String,
     #[serde(default = "default_weight")]
     pub weight: usize,
+    /// Version label for canary routing (ADR-0063).
+    #[serde(default)]
+    pub version: String,
 }
 fn default_weight() -> usize { 1 }
+
+/// Canary rollout policy (ADR-0063) — mirrored from gateway schema.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CanaryPolicy {
+    pub version: String,
+    #[serde(default)]
+    pub percent: u32,
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Route {
@@ -41,6 +52,9 @@ pub struct Route {
     pub service_name: String,
     #[serde(default)]
     pub strip_prefix: bool,
+    /// Timeout-policy tier: "fast" | "normal" | "slow" (ADR-0062).
+    #[serde(default)]
+    pub tier: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -51,6 +65,8 @@ pub struct ServiceConfig {
     pub regional_upstreams: HashMap<String, Vec<Upstream>>,
     #[serde(default = "default_true")]
     pub require_auth: bool,
+    #[serde(default)]
+    pub canary: Option<CanaryPolicy>,
 }
 fn default_rate_limit() -> usize { 1_000 }
 fn default_true() -> bool { true }
@@ -858,6 +874,7 @@ fn load_initial_config() -> ConfigSnapshot {
                     path_prefix: "/".to_string(),
                     service_name: "default-service".to_string(),
                     strip_prefix: false,
+            tier: String::new(),
                 });
             }
         }
@@ -879,7 +896,7 @@ fn build_fallback(snap: &mut ConfigSnapshot) {
     ] {
         upstreams.insert(
             region.to_string(),
-            vec![Upstream { name: addr.to_string(), address: addr.to_string(), weight: 1 }],
+            vec![Upstream { name: addr.to_string(), address: addr.to_string(), weight: 1, version: String::new() }],
         );
     }
     let svc = ServiceConfig {
@@ -887,12 +904,14 @@ fn build_fallback(snap: &mut ConfigSnapshot) {
         rate_limit_max: 10_000,
         regional_upstreams: upstreams,
         require_auth: true,
+        canary: None,
     };
     snap.services.insert("default-service".to_string(), svc);
     snap.routes.push(Route {
         path_prefix: "/".to_string(),
         service_name: "default-service".to_string(),
         strip_prefix: false,
+            tier: String::new(),
     });
 }
 

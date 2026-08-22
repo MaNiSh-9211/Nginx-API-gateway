@@ -188,6 +188,7 @@ pub unsafe extern "C" fn process_request(
     body_ptr:         *const c_char,
     body_len:         usize,
     client_ip_ptr:    *const c_char,
+    canary_hint_ptr:  *const c_char,
     region_out_ptr:   *mut c_char,
     region_out_len:   usize,
     upstream_out_ptr: *mut c_char,
@@ -198,6 +199,8 @@ pub unsafe extern "C" fn process_request(
     user_id_out_len:  usize,
     home_region_out_ptr: *mut c_char,
     home_region_out_len: usize,
+    tier_out_ptr:     *mut c_char,
+    tier_out_len:     usize,
 ) -> i32 {
     // 0. Backpressure
     if !backpressure::acquire() {
@@ -229,6 +232,12 @@ pub unsafe extern "C" fn process_request(
     };
     let client_ip = if !client_ip_ptr.is_null() {
         std::str::from_utf8(CStr::from_ptr(client_ip_ptr).to_bytes()).unwrap_or("")
+    } else {
+        ""
+    };
+    // Canary stickiness hint (header/cookie value computed in Lua, ADR-0063).
+    let canary_hint = if !canary_hint_ptr.is_null() {
+        std::str::from_utf8(CStr::from_ptr(canary_hint_ptr).to_bytes()).unwrap_or("")
     } else {
         ""
     };
@@ -279,6 +288,10 @@ pub unsafe extern "C" fn process_request(
         }
     };
 
+    // Timeout-policy tier for nginx's matching internal location (ADR-0062).
+    if !tier_out_ptr.is_null() {
+        write_c_string(&resolved.tier, tier_out_ptr, tier_out_len);
+    }
     // 4. Auth enforcement
     if service.require_auth && identity.is_none() {
         backpressure::release();
@@ -293,7 +306,7 @@ pub unsafe extern "C" fn process_request(
     }
 
     // 6. Load balancing
-    match load_balancing::select_upstream(Some(service), &resolved.region, user_key) {
+    match load_balancing::select_upstream(Some(service), &resolved.region, user_key, canary_hint) {
         Some(upstream_name) => {
             write_c_string(&resolved.region, region_out_ptr, region_out_len);
             if !upstream_out_ptr.is_null() {

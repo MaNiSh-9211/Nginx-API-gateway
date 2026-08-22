@@ -23,8 +23,16 @@ use matchit::Router;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
+/// Match target stored in the radix tree: service name + timeout tier.
+#[derive(Clone, Debug)]
+pub struct RouteMeta {
+    pub service_name: String,
+    /// "fast" | "normal" | "slow" (ADR-0062).
+    pub tier: String,
+}
+
 lazy_static::lazy_static! {
-    pub static ref GLOBAL_ROUTER: ArcSwap<Router<String>> =
+    pub static ref GLOBAL_ROUTER: ArcSwap<Router<RouteMeta>> =
         ArcSwap::from_pointee(Router::new());
 }
 
@@ -41,13 +49,17 @@ fn current_region() -> &'static str {
 pub fn update_router(config: &GatewayConfig) {
     let mut router = Router::new();
     for route in &config.routes {
+        let meta = RouteMeta {
+            service_name: route.service_name.clone(),
+            tier: route.effective_tier().to_string(),
+        };
         let path = if route.path_prefix.ends_with('/') {
             format!("{}*path", route.path_prefix)
         } else {
             format!("{}/*path", route.path_prefix)
         };
-        let _ = router.insert(path, route.service_name.clone());
-        let _ = router.insert(route.path_prefix.clone(), route.service_name.clone());
+        let _ = router.insert(path, meta.clone());
+        let _ = router.insert(route.path_prefix.clone(), meta);
     }
     GLOBAL_ROUTER.store(Arc::new(router));
 }
@@ -55,16 +67,18 @@ pub fn update_router(config: &GatewayConfig) {
 pub struct ResolvedRoute {
     pub service: Option<ServiceConfig>,
     pub region: String,
+    /// Timeout-policy tier for this route ("fast" | "normal" | "slow").
+    pub tier: String,
 }
 
 pub fn route_request(path: &str, identity: Option<&UserIdentity>, _cb_state: i32) -> Result<ResolvedRoute, i32> {
     let config = GLOBAL_CONFIG.load();
-    let service = find_service(path, &config);
+    let (service, tier) = find_service(path, &config);
 
     let identity_region = identity.and_then(|id| id.home_region.as_deref());
     let region = resolve_region(identity_region, current_region())?;
 
-    Ok(ResolvedRoute { service, region })
+    Ok(ResolvedRoute { service, region, tier })
 }
 
 /// Decide which regional upstream pool serves this request, enforcing data
@@ -95,13 +109,14 @@ fn resolve_region(identity_region: Option<&str>, current: &str) -> Result<String
     Ok(required)
 }
 
-/// O(1) Radix tree match: find the service for a given path.
-fn find_service(path: &str, config: &GatewayConfig) -> Option<ServiceConfig> {
+/// O(1) Radix tree match: find the service + tier for a given path.
+fn find_service(path: &str, config: &GatewayConfig) -> (Option<ServiceConfig>, String) {
     let router = GLOBAL_ROUTER.load();
     if let Ok(matched) = router.at(path) {
-        config.services.get(matched.value).cloned()
+        let svc = config.services.get(matched.value.service_name.as_str()).cloned();
+        (svc, matched.value.tier.clone())
     } else {
-        None
+        (None, "normal".to_string())
     }
 }
 

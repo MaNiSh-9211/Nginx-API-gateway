@@ -91,6 +91,14 @@ pub fn is_healthy(address: &str) -> bool {
     slot(address).healthy.load(Ordering::Relaxed) == 1
 }
 
+/// Test-only: force an address's health flag (simulates probe outcomes).
+#[cfg(test)]
+pub fn force_set_for_test(address: &str, up: bool) {
+    let s = slot(address);
+    s.healthy.store(if up { 1 } else { 0 }, Ordering::Release);
+    s.last_check_ms.store(now_ms(), Ordering::Release);
+}
+
 // ── Threshold transition (pure, unit-tested) ─────────────────────────────────
 
 /// Applies one probe result. Returns Some(new_state) only on a flip.
