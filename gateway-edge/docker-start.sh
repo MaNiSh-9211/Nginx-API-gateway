@@ -62,5 +62,4 @@ if [ -n "${UPSTREAM_MTLS_CERT:-}" ] && [ -n "${UPSTREAM_MTLS_KEY:-}" ]; then
     echo "gateway: upstream mTLS client cert configured"
 fi
 
-echo "gateway: starting OpenResty"
 exec "$OPENRESTY" -g 'daemon off;'

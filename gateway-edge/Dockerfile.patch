@@ -1,0 +1,5 @@
+FROM gateway-edge:latest
+COPY lua/gateway.lua        /usr/local/openresty/nginx/lua/gateway.lua
+COPY nginx.conf             /usr/local/openresty/nginx/conf/nginx.conf
+COPY gateway-locations.conf /usr/local/openresty/nginx/conf/gateway-locations.conf
+COPY docker-start.sh        /docker-start.sh
