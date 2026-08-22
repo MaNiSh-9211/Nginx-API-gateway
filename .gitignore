@@ -98,3 +98,4 @@ dev/mongodb-uris.local.txt
 **/*.orig
 env.txt
 docker_*.txt
+**/Dockerfile.patch
