@@ -19,6 +19,7 @@ mod auth;
 mod backpressure;
 mod cache;
 pub mod config;
+pub mod cors;
 pub mod health;
 mod load_balancing;
 pub mod otlp;
@@ -30,6 +31,28 @@ mod router;
 pub mod telemetry;
 mod validate;
 mod waf;
+
+/// FFI: packed CORS headers for this request's Origin ('' = deny/disabled).
+/// # Safety
+/// `origin_ptr` must be a valid C string or NULL; `buf` writable for `len`.
+#[no_mangle]
+pub unsafe extern "C" fn get_cors_headers(
+    origin_ptr: *const c_char,
+    buf: *mut c_char,
+    len: usize,
+) -> i32 {
+    if buf.is_null() || len == 0 {
+        return 0;
+    }
+    let origin = if origin_ptr.is_null() {
+        ""
+    } else {
+        std::str::from_utf8(CStr::from_ptr(origin_ptr).to_bytes()).unwrap_or("")
+    };
+    let packed = cors::packed_headers(origin);
+    write_c_string(&packed, buf, len);
+    packed.len().min(len.saturating_sub(1)) as i32
+}
 
 // Re-export for external consumers / tests.
 pub use load_balancing::circuit_breaker;

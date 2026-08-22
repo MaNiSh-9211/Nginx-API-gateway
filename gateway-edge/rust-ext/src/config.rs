@@ -91,6 +91,29 @@ pub struct QuotaPolicy {
     pub daily_limit: u64,
 }
 
+/// Dynamic CORS policy (ADR-0068) — distributed via config hot-reload so
+/// origins change without redeploying the gateway.
+#[derive(Debug, Deserialize, Clone)]
+pub struct CorsConfig {
+    /// Exact origins, or "*" for wildcard. Empty list = deny all CORS.
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
+    #[serde(default = "ct_true")]
+    pub allow_credentials: bool,
+    #[serde(default = "ct_methods")]
+    pub allowed_methods: String,
+    #[serde(default = "ct_headers")]
+    pub allowed_headers: String,
+    #[serde(default = "ct_max_age")]
+    pub max_age: u32,
+}
+fn ct_true() -> bool { true }
+fn ct_methods() -> String { "GET, POST, PUT, PATCH, DELETE, OPTIONS".to_string() }
+fn ct_headers() -> String {
+    "Content-Type, Authorization, X-Requested-With, Accept, Origin, X-CSRF-Token, X-Canary, X-Request-ID, traceparent".to_string()
+}
+fn ct_max_age() -> u32 { 600 }
+
 /// Active health-check policy (ADR-0061). Absent = disabled.
 #[derive(Debug, Deserialize, Clone)]
 pub struct HealthCheckConfig {
@@ -147,6 +170,10 @@ pub struct GatewayConfig {
     /// Active upstream health probing (ADR-0061). None = disabled.
     #[serde(default)]
     pub health_check: Option<HealthCheckConfig>,
+
+    /// Dynamic CORS policy (ADR-0068). None = edge emits no CORS headers.
+    #[serde(default)]
+    pub cors: Option<CorsConfig>,
 }
 
 fn default_secret() -> String { "default_secret".to_string() }
@@ -165,6 +192,7 @@ impl Default for GatewayConfig {
             services: HashMap::new(),
             routes: Vec::new(),
             health_check: None,
+            cors: None,
         }
     }
 }

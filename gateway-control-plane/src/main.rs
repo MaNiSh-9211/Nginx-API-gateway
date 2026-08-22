@@ -127,6 +127,9 @@ pub struct ConfigSnapshot {
     pub routes: Vec<Route>,
     #[serde(default)]
     pub health_check: Option<HealthCheckConfig>,
+    /// Dynamic CORS policy (ADR-0068) — mirrored opaquely for round-trips.
+    #[serde(default)]
+    pub cors: Option<serde_json::Value>,
 }
 fn default_concurrency() -> usize { 10_000 }
 fn default_jwt() -> String { "super_secret_key_for_hmac_sha256".to_string() }
@@ -892,6 +895,7 @@ fn load_initial_config() -> ConfigSnapshot {
         services: HashMap::new(),
         routes: Vec::new(),
         health_check: None,
+            cors: None,
     };
 
     match fs::read_dir(&config_dir) {
@@ -1180,6 +1184,7 @@ mod tests {
             services: HashMap::new(),
             routes: Vec::new(),
             health_check: None,
+            cors: None,
         };
         let json = serde_json::to_string(&snap).unwrap();
         assert!(!json.contains("TOP-SECRET-VALUE"), "jwt_secret leaked in JSON");
@@ -1199,6 +1204,7 @@ mod tests {
             services: HashMap::new(),
             routes: Vec::new(),
             health_check: None,
+            cors: None,
         };
         let mut store = ConfigStore::new(base.clone(), 3);
         for v in 2..=10 {
@@ -1222,6 +1228,7 @@ mod tests {
             services: HashMap::new(),
             routes: Vec::new(),
             health_check: None,
+            cors: None,
         };
         let mut store = ConfigStore::new(base.clone(), 5);
         let mut v2 = base.clone();
@@ -1244,6 +1251,7 @@ mod tests {
             services: HashMap::new(),
             routes: Vec::new(),
             health_check: None,
+            cors: None,
         };
         let mut store = ConfigStore::new(base, 5);
         assert!(store.pop().is_none(), "must not pop the only version");

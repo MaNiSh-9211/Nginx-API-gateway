@@ -245,6 +245,7 @@ mod tests {
             services: HashMap::new(),
             routes: Vec::new(),
             health_check: None,
+            cors: None,
         }
     }
 

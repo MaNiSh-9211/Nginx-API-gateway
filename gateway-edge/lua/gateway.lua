@@ -31,6 +31,7 @@ int   process_request(const char* auth_header, const char* path,
                       char* home_region_out, size_t home_region_out_len,
                       char* tier_out,     size_t tier_out_len);
 void  report_telemetry(int status, size_t latency_us, const char* upstream);
+int   get_cors_headers(const char* origin, char* buf, size_t len);
 void  release_slot(void);
 int   is_ready(void);
 int   get_config_version(char* buf, size_t len);
@@ -60,6 +61,51 @@ local reqid_buf    = ffi.new("char[?]", REQID_LEN)
 local user_id_buf  = ffi.new("char[?]", USER_ID_LEN)
 local home_region_buf = ffi.new("char[?]", HOME_REGION_LEN)
 local tier_buf     = ffi.new("char[?]", TIER_LEN)
+local CORS_LEN     = 512
+local cors_buf     = ffi.new("char[?]", CORS_LEN)
+
+-- ── Dynamic CORS (ADR-0068) ──────────────────────────────────────────────
+-- Origins/methods/headers come from the hot-reloaded config via Rust.
+-- Preflight OPTIONS is answered here (204) and never reaches a backend.
+local function apply_cors()
+    local origin = ngx.var.http_origin
+    if not origin or origin == "" then return end
+
+    local n = lib.get_cors_headers(origin, cors_buf, CORS_LEN)
+    local packed = ffi.string(cors_buf, n)
+    if packed == "" then
+        -- Origin not allow-listed: emit nothing; browser blocks the response.
+        if ngx.req.get_method() == "OPTIONS" then
+            ngx.status = 403
+            ngx.header["Content-Length"] = "0"
+            return ngx.exit(403)
+        end
+        return
+    end
+
+    local parts = {}
+    local pos = 1
+    while true do
+        local s, e = packed:find("\31", pos, true)
+        if not s then parts[#parts + 1] = packed:sub(pos); break end
+        parts[#parts + 1] = packed:sub(pos, s - 1)
+        pos = e + 1
+    end
+
+    ngx.header["Access-Control-Allow-Origin"] = parts[1]
+    if parts[5] == "true" then
+        ngx.header["Access-Control-Allow-Credentials"] = "true"
+    end
+    ngx.header["Vary"] = "Origin"
+    if ngx.req.get_method() == "OPTIONS" then
+        ngx.header["Access-Control-Allow-Methods"] = parts[2]
+        ngx.header["Access-Control-Allow-Headers"] = parts[3]
+        ngx.header["Access-Control-Max-Age"] = parts[4]
+        ngx.status = 204
+        ngx.header["Content-Length"] = "0"
+        return ngx.exit(204)
+    end
+end
 
 local ERROR_BODIES = {
     [400] = '{"error":"Bad Request"}',
@@ -84,6 +130,8 @@ function M.access()
     var.gateway_request_id = ""
     var.gateway_user_id = ""
     var.gateway_home_region = ""
+    -- CORS preflight/headers first (ADR-0068) — preflights never hit backends.
+    apply_cors()
     -- Strip client-supplied identity headers before auth (ADR-0040, ADR-0048).
     -- Upstream only receives values the gateway sets after JWT validation.
     ngx.req.clear_header("X-User-Id")
