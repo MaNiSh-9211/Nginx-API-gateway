@@ -1,109 +1,133 @@
+# ============================================================
+# Gateway alert rules — metrics contract as of v1.1.x
+#
+# Metric names verified against gateway-edge /metrics:
+#   gateway_http_requests_total      counter (edge, SHM aggregate)
+#   gateway_http_requests_5xx_total  counter
+#   gateway_latency_us_bucket        histogram
+#   gateway_active_health_up         gauge   {upstream=...}   (ADR-0061)
+#   gateway_auth_snapshot_age_seconds gauge  (ADR-0054)
+#   uam_redis_circuit_state          gauge   {job="uam-backend"}
+#
+# Import into Grafana Cloud: Alerting → Alert rules → Prometheus rules
+# → upload this file (or point your cloud agent's rule_files at it).
+# Local prometheus picks it up automatically via prometheus.local.yml.
+# ============================================================
 groups:
-  - name: gateway_alerts
+  - name: gateway_availability
     rules:
 
       - alert: GatewayHighErrorRate
         expr: |
-          rate(gateway_requests_total[1m]) > 0
-          and rate(gateway_requests_5xx_total[1m])
-            / rate(gateway_requests_total[1m]) > 0.01
-        for: 30s
+          sum(rate(gateway_http_requests_5xx_total[5m]))
+            / clamp_min(sum(rate(gateway_http_requests_total[5m])), 1e-9) > 0.05
+        for: 5m
         labels:
           severity: critical
+          team: platform
         annotations:
-          summary: "Gateway error rate > 1%"
-          description: "5xx rate is {{ $value | humanizePercentage }} over the last minute."
+          summary: "Gateway 5xx ratio > 5% for 5m"
+          description: "Edge error ratio {{ $value | humanizePercentage }} (SLO target < 1%)."
 
-      # Real P99 from histogram — requires gateway_latency_us_bucket to be scraped
-      - alert: GatewayHighP99Latency
+      - alert: GatewayEdgeDown
+        expr: up{job="gateway-edge"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "gateway-edge scrape down"
+          description: "Prometheus cannot reach gateway-edge /metrics."
+
+      - alert: GatewayP99LatencyBreach
         expr: |
           histogram_quantile(0.99,
-            rate(gateway_latency_us_bucket[1m])
-          ) > 1000
-        for: 30s
+            sum by (le) (rate(gateway_latency_us_bucket[5m]))
+          ) > 100000
+        for: 10m
         labels:
           severity: warning
+          team: platform
         annotations:
-          summary: "Gateway P99 latency > 1ms"
-          description: "P99 latency is {{ $value }}µs — exceeds 1ms SLA."
+          summary: "Gateway P99 latency > 100 ms for 10 m"
+          description: "P99 = {{ $value | humanizeDuration }}."
 
-      - alert: GatewayHighP50Latency
+  # ── SLO burn-rate (99.9% availability → error budget 0.1%) ──────────────
+  # Multi-window pair: page when burning budget ≥14.4× on 1h AND ≥14.4× on 5m;
+  # ticket when ≥6× on 6h AND ≥6× on 30m. Standard Google-SRE shape.
+  - name: gateway_slo_burn_rate
+    rules:
+
+      - alert: GatewaySLOBurnRatePage
         expr: |
-          histogram_quantile(0.50,
-            rate(gateway_latency_us_bucket[1m])
-          ) > 500
-        for: 60s
-        labels:
-          severity: warning
-        annotations:
-          summary: "Gateway P50 latency > 500µs"
-          description: "Median latency is {{ $value }}µs."
-
-      - alert: GatewayCircuitOpen
-        expr: gateway_circuit_breaker_state == 1
-        for: 10s
+          (
+            sum(rate(gateway_http_requests_5xx_total[1h]))
+              / clamp_min(sum(rate(gateway_http_requests_total[1h])), 1e-9)
+          ) > (14.4 * 0.001)
+          and
+          (
+            sum(rate(gateway_http_requests_5xx_total[5m]))
+              / clamp_min(sum(rate(gateway_http_requests_total[5m])), 1e-9)
+          ) > (14.4 * 0.001)
+        for: 2m
         labels:
           severity: critical
+          team: platform
+          slo: availability-99.9
         annotations:
-          summary: "Gateway global circuit breaker is OPEN"
-          description: "All upstream traffic is being rejected. Immediate action required."
+          summary: "SLO fast-burn: paging threshold crossed"
+          description: "Availability budget burning ≥14.4× — will exhaust in <2 days at this rate."
 
-      - alert: GatewayBackpressureHigh
+      - alert: GatewaySLOBurnRateTicket
         expr: |
-          gateway_max_concurrency > 0
-          and gateway_in_flight / gateway_max_concurrency > 0.9
-        for: 15s
+          (
+            sum(rate(gateway_http_requests_5xx_total[6h]))
+              / clamp_min(sum(rate(gateway_http_requests_total[6h])), 1e-9)
+          ) > (6 * 0.001)
+          and
+          (
+            sum(rate(gateway_http_requests_5xx_total[30m]))
+              / clamp_min(sum(rate(gateway_http_requests_total[30m])), 1e-9)
+          ) > (6 * 0.001)
+        for: 15m
         labels:
           severity: warning
+          team: platform
+          slo: availability-99.9
         annotations:
-          summary: "Gateway in-flight requests > 90% of limit"
-          description: "In-flight: {{ $value }} requests."
+          summary: "SLO slow-burn: ticket threshold crossed"
+          description: "Availability budget burning ≥6× — investigate within days."
 
-      - alert: GatewayHighWafBlocks
-        expr: rate(gateway_waf_blocks_total[1m]) > 100
-        for: 30s
+  # ── Dependency health (ADR-0054 / ADR-0061) ──────────────────────────────
+  - name: gateway_dependencies
+    rules:
+
+      - alert: UpstreamActivelyUnhealthy
+        expr: gateway_active_health_up == 0
+        for: 3m
         labels:
           severity: warning
+          team: platform
         annotations:
-          summary: "WAF blocking > 100 req/s — possible attack"
-          description: "WAF block rate: {{ $value }}/s."
+          summary: "Upstream failing active health probes: {{ $labels.upstream }}"
+          description: "Active prober has marked this upstream DOWN for 3+ minutes."
 
-      - alert: GatewayHighRateLimitRate
-        expr: rate(gateway_requests_429_total[1m]) > 1000
-        for: 30s
+      - alert: AuthRevocationSnapshotStale
+        expr: gateway_auth_snapshot_age_seconds > 60
+        for: 5m
         labels:
-          severity: info
+          severity: warning
+          team: security
         annotations:
-          summary: "High rate-limit rejection rate"
-          description: "429 rate: {{ $value }}/s — clients may need quota increase."
+          summary: "Edge revocation snapshot is stale (>60s)"
+          description: "Worker cannot reach Redis for auth deltas; with REVOCATION_FAIL_CLOSED=1 auth will fail closed."
 
-      - alert: GatewayConfigNotReady
-        expr: gateway_config_ready == 0
-        for: 30s
+      - alert: UamRedisCircuitOpenLong
+        expr: uam_redis_circuit_state == 1
+        for: 10m
         labels:
-          severity: critical
+          severity: warning
+          team: identity
         annotations:
-          summary: "Gateway config not loaded"
-          description: "gateway_config_ready is 0 — sidecar may be failing or config invalid."
-
-      # Use Prometheus's synthetic `up` metric, NOT `gateway_up`. When the
-      # process is down the gateway can't serve /metrics, so `gateway_up` goes
-      # ABSENT (never 0) and `gateway_up == 0` would never fire. `up{job=...}` is
-      # set to 0 by Prometheus itself on a failed scrape.
-      - alert: GatewayDown
-        expr: up{job="gateway"} == 0
-        for: 5s
-        labels:
-          severity: critical
-        annotations:
-          summary: "Gateway process is down"
-          description: "Prometheus cannot scrape the gateway target — process may have crashed."
-
-      - alert: ControlPlaneDown
-        expr: up{job="control-plane"} == 0
-        for: 5s
-        labels:
-          severity: critical
-        annotations:
-          summary: "Control plane is down"
-          description: "Prometheus cannot scrape the control-plane target."
+          summary: "uam-backend Redis circuit OPEN >10m"
+          description: "Distributed rate limiting degraded; check Upstash connectivity."

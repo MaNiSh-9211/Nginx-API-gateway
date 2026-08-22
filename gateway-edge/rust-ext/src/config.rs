@@ -80,6 +80,15 @@ pub struct ServiceConfig {
     pub require_auth: bool,
     #[serde(default)]
     pub canary: Option<CanaryPolicy>,
+    /// Per-user daily quota (ADR-0066). Absent = unlimited.
+    #[serde(default)]
+    pub quota: Option<QuotaPolicy>,
+}
+
+/// Daily per-user request ceiling (ADR-0066).
+#[derive(Debug, Deserialize, Clone)]
+pub struct QuotaPolicy {
+    pub daily_limit: u64,
 }
 
 /// Active health-check policy (ADR-0061). Absent = disabled.

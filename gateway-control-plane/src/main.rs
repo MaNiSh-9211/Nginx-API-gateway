@@ -72,6 +72,9 @@ pub struct ServiceConfig {
     pub require_auth: bool,
     #[serde(default)]
     pub canary: Option<CanaryPolicy>,
+    /// Per-user daily quota policy (ADR-0066) — mirrored opaquely.
+    #[serde(default)]
+    pub quota: Option<serde_json::Value>,
 }
 fn default_rate_limit() -> usize { 1_000 }
 fn default_true() -> bool { true }
@@ -949,6 +952,7 @@ fn build_fallback(snap: &mut ConfigSnapshot) {
         regional_upstreams: upstreams,
         require_auth: true,
         canary: None,
+        quota: None,
     };
     snap.services.insert("default-service".to_string(), svc);
     snap.routes.push(Route {

@@ -26,4 +26,41 @@ while [ ! -s "$CONFIG_PATH" ]; do
 done
 
 echo "gateway: config ready, starting OpenResty"
+
+# ── mTLS includes (ADR-0067, gap #6) ─────────────────────────────────────
+# Always emitted (possibly empty) so nginx.conf can include them unconditionally.
+#
+# CLIENT-cert verification (browsers/clients → gateway), env-gated:
+#   MTLS_CLIENT_VERIFY=on|optional   +  MTLS_CLIENT_CA_FILE=/path/ca.crt
+UPSTREAM_MTLS_BLOCK="/etc/nginx/upstream_mtls.conf"
+CLIENT_MTLS_BLOCK="/etc/nginx/client_mtls.conf"
+: > "$UPSTREAM_MTLS_BLOCK"
+: > "$CLIENT_MTLS_BLOCK"
+
+if [ -n "${MTLS_CLIENT_VERIFY:-}" ] && [ -n "${MTLS_CLIENT_CA_FILE:-}" ]; then
+    cat > "$CLIENT_MTLS_BLOCK" <<EOF
+ssl_client_certificate ${MTLS_CLIENT_CA_FILE};
+ssl_verify_client ${MTLS_CLIENT_VERIFY};
+ssl_verify_depth 2;
+EOF
+    echo "gateway: client mTLS enabled (verify=${MTLS_CLIENT_VERIFY})"
+fi
+
+# UPSTREAM mTLS (gateway → backends), env-gated:
+#   UPSTREAM_MTLS_CERT / UPSTREAM_MTLS_KEY / optional UPSTREAM_MTLS_CA_FILE
+if [ -n "${UPSTREAM_MTLS_CERT:-}" ] && [ -n "${UPSTREAM_MTLS_KEY:-}" ]; then
+    {
+        echo "proxy_ssl_certificate ${UPSTREAM_MTLS_CERT};"
+        echo "proxy_ssl_certificate_key ${UPSTREAM_MTLS_KEY};"
+        echo "proxy_ssl_server_name on;"
+        if [ -n "${UPSTREAM_MTLS_CA_FILE:-}" ]; then
+            echo "proxy_ssl_trusted_certificate ${UPSTREAM_MTLS_CA_FILE};"
+            echo "proxy_ssl_verify on;"
+            echo "proxy_ssl_verify_depth 2;"
+        fi
+    } > "$UPSTREAM_MTLS_BLOCK"
+    echo "gateway: upstream mTLS client cert configured"
+fi
+
+echo "gateway: starting OpenResty"
 exec "$OPENRESTY" -g 'daemon off;'

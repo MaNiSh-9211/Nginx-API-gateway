@@ -22,6 +22,7 @@ pub mod config;
 pub mod health;
 mod load_balancing;
 pub mod otlp;
+mod quota;
 mod rate_limit;
 pub mod redis_cb;
 pub mod revocation;
@@ -319,6 +320,15 @@ pub unsafe extern "C" fn process_request(
     if service.require_auth && identity.is_none() {
         backpressure::release();
         return 401;
+    }
+
+    // 4b. Per-user daily quota (ADR-0066) — authenticated traffic only.
+    if let (Some(id), Some(q)) = (identity.as_ref(), service.quota.as_ref()) {
+        if !quota::check_quota(&service.name, &id.user_id, q) {
+            eprintln!("[quota] {}/{} exceeded daily limit {}", service.name, id.user_id, q.daily_limit);
+            backpressure::release();
+            return 429;
+        }
     }
 
     // 5. Per-user rate limiting

@@ -170,6 +170,7 @@ mod tests {
             regional_upstreams: regional,
             require_auth: false,
             canary,
+            quota: None,
         }
     }
 

@@ -37,6 +37,14 @@ services:
       TLS_ENABLED: "false"
       TLS_CERT_PATH: /etc/nginx/certs/server.crt
       TLS_KEY_PATH: /etc/nginx/certs/server.key
+      # ── mTLS (ADR-0067): set + mount certs to enable ──
+      # Client verification (clients → gateway):
+      MTLS_CLIENT_VERIFY: ${MTLS_CLIENT_VERIFY:-}
+      MTLS_CLIENT_CA_FILE: ${MTLS_CLIENT_CA_FILE:-}
+      # Upstream client cert (gateway → backends):
+      UPSTREAM_MTLS_CERT: ${UPSTREAM_MTLS_CERT:-}
+      UPSTREAM_MTLS_KEY: ${UPSTREAM_MTLS_KEY:-}
+      UPSTREAM_MTLS_CA_FILE: ${UPSTREAM_MTLS_CA_FILE:-}
       # Secrets — resolved from dev/.env
       JWT_SECRET: ${JWT_SECRET}
       CONFIG_READ_TOKEN: ${CONFIG_READ_TOKEN}

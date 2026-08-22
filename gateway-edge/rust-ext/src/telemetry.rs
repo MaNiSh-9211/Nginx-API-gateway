@@ -297,5 +297,17 @@ pub fn prometheus_text() -> String {
          gateway_active_health_failures_total {hc_fails}\n"
     ));
 
+    // Per-user daily quotas (ADR-0066).
+    let q_checks = crate::quota::QUOTA_CHECKS_TOTAL.load(Ordering::Relaxed);
+    let q_rej    = crate::quota::QUOTA_REJECTED_TOTAL.load(Ordering::Relaxed);
+    out.push_str(&format!(
+        "# HELP gateway_quota_checks_total Quota pipeline checks executed\n\
+         # TYPE gateway_quota_checks_total counter\n\
+         gateway_quota_checks_total {q_checks}\n\
+         # HELP gateway_quota_rejected_total Requests rejected for daily quota\n\
+         # TYPE gateway_quota_rejected_total counter\n\
+         gateway_quota_rejected_total {q_rej}\n"
+    ));
+
     out
 }
