@@ -1319,8 +1319,9 @@ FINAL REPORT (IMPLEMENTATION COMPLETE — Redis Circuit Breaker)
     - Baseline-aware (relative) latency detection is NOT implemented; only
       absolute thresholds (§13 — documented as future work in all three
       implementations).
-    - Distributed tracing (spans) is NOT implemented anywhere in the stack
-      yet (§24 — see LGTM section).
+    - Distributed tracing (spans) IS implemented (v1.1 — OTLP to Grafana
+      Cloud from edge/control-plane/uam-backend; see LGTM section). The note
+      below predates that work.
     - uam `*_total` counters reset with the process (fine for Prometheus
       `rate()`, but long-lived instances only).
     - The statistical detector samples on `release()`; a burst that happens
@@ -1333,8 +1334,10 @@ FINAL REPORT (IMPLEMENTATION COMPLETE — Redis Circuit Breaker)
 
     - Baseline-aware latency (relative degradation) with bounded adaptive
       baseline.
-    - OpenTelemetry spans for Redis operations (LGTM stack, §24).
+    - OpenTelemetry spans for Redis operations — DONE for service-level
+      traces/metrics/logs; per-Redis-op spans remain future work.
     - Exact percentile sketches (HDR) if tighter latency estimates are needed.
     - Cross-service load + chaos testing for the breaker.
-    - Grafana dashboards for the circuit-breaker/redis series (planned with
-      LGTM).
+    - Grafana dashboards for circuit-breaker/redis series — import
+      `platform/monitoring/prometheus/rules/gateway-alerts.yml` for alerting;
+      dashboard JSON still to be authored.
