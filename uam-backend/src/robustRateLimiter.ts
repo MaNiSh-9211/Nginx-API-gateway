@@ -169,9 +169,23 @@ export class RobustRateLimiter {
     return this.localRateLimit(clientIdentifier);
   }
 
+  /// Expired-window entries were never evicted — a flood of unique IPs in
+  /// fallback mode grew this map without bound (OOM vector). Swept lazily:
+  /// at most once per minute, only when the map is non-trivial.
+  private lastSweepMs: number = 0;
+  private sweepExpiredWindows(): void {
+    const now = Date.now();
+    if (this.localCache.size < 4_096 || now - this.lastSweepMs < 60_000) return;
+    this.lastSweepMs = now;
+    for (const [key, rec] of this.localCache) {
+      if (rec.resetAt < now) this.localCache.delete(key);
+    }
+  }
+
   /**
    * Local rate limiting fallback (no Redis) */
   private async localRateLimit(clientIdentifier: string): Promise<RateLimitResult> {
+    this.sweepExpiredWindows();
     const cacheKey = `rate_limit:local:${clientIdentifier}`;
     const cacheEntry = this.localCache.get(cacheKey) || {
       count: 0,
