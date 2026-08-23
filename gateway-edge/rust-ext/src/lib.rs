@@ -345,20 +345,21 @@ pub unsafe extern "C" fn process_request(
         return 401;
     }
 
-    // 4b. Per-user daily quota (ADR-0066) — authenticated traffic only.
+    // 5. Per-user rate limiting — runs BEFORE quota so requests rejected for
+    //    burst rate never consume the daily allowance (ADR-0066 flow fix).
+    let user_key = identity.as_ref().map(|id| id.user_id.as_str());
+    if !rate_limit::check_rate_limit(service.rate_limit_max, user_key) {
+        backpressure::release();
+        return 429;
+    }
+
+    // 5b. Per-user daily quota (ADR-0066) — authenticated, admitted traffic.
     if let (Some(id), Some(q)) = (identity.as_ref(), service.quota.as_ref()) {
         if !quota::check_quota(&service.name, &id.user_id, q) {
             eprintln!("[quota] {}/{} exceeded daily limit {}", service.name, id.user_id, q.daily_limit);
             backpressure::release();
             return 429;
         }
-    }
-
-    // 5. Per-user rate limiting
-    let user_key = identity.as_ref().map(|id| id.user_id.as_str());
-    if !rate_limit::check_rate_limit(service.rate_limit_max, user_key) {
-        backpressure::release();
-        return 429;
     }
 
     // 6. Load balancing
