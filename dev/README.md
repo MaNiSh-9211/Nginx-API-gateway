@@ -29,7 +29,7 @@ Each service is built from its own folder:
 ```bash
 cd dev
 # Safe defaults already committed in .env files
-cp .env.example .env.dev          # then add real credentials (MongoDB Atlas, OAuth)
+cp .env.example .env.dev          # then add real credentials (PostgreSQL Aiven, OAuth)
 ../scripts/setup-dev-env.ps1      # or bootstrap all services at once (Windows)
 ```
 
@@ -51,7 +51,7 @@ Folders with the three-file layout:
 
 `dev/`, `gateway-edge/`, `gateway-control-plane/`, `gateway-sidecar/`, `gateway-redis/`, `uam-backend/`, `uam-frontend/`, `demo-backend/`, `demo-frontend/`
 
-**MongoDB:** set `MONGODB_URI` in `dev/.env.dev` for Atlas (database name `uam`). Or use local mongo: `docker compose --profile local-mongo …`
+**PostgreSQL:** DATABASE_URL in uam-backend/.env (Aiven managed).
 
 ---
 
@@ -177,7 +177,7 @@ See **Environment files** above. Production uses Helm / K8s Secrets — never `.
 | Shared in `dev/.env` / `dev/.env.dev` | Used by |
 |---------------------------------------|---------|
 | `JWT_SECRET` | gateway-edge, control-plane, uam-backend, demo-backend |
-| `MONGODB_URI` | uam-backend (put Atlas URI in `.env.dev`) |
+| `DATABASE_URL) |
 | `ADMIN_API_KEY` | control-plane, uam-backend |
 | `PASSWORD_PEPPER` | uam-backend, demo-backend |
 | `UAM_FRONTEND_PORT` | uam-frontend URL, OAuth callbacks |

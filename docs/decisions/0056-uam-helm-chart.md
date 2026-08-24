@@ -30,9 +30,9 @@ Production values enable `AUTH_OMIT_REFRESH_IN_BODY` and `COOKIE_SECURE` (ADR-00
 ## Alternatives considered
 
 - **Subchart of api-gateway** — couples release cycles; rejected.
-- **External managed MongoDB only** — supported via `mongodb.enabled=false` + custom `MONGODB_URI` (future values override).
+- **External managed MongoDB only** — supported via `mongodb.enabled=false` + custom `DATABASE_URL).
 
 ## Consequences
 
 - Operators install two releases: `api-gateway`, then `uam`.
-- MongoDB root credentials live in `uam-secrets` Secret.
+- PostgreSQL credentials live in `uam-secrets` Secret.

@@ -18,7 +18,7 @@ helm install uam ./platform/deploy/helm/uam \
   --set secrets.adminApiKey="$(kubectl get secret gateway-secrets -n api-gateway -o jsonpath='{.data.ADMIN_API_KEY}' | base64 -d)" \
   --set secrets.jwtRefreshSecret="CHANGE_ME" \
   --set secrets.passwordPepper="CHANGE_ME" \
-  --set secrets.mongoRootPassword="CHANGE_ME" \
+  --set secrets.dbPassword="CHANGE_ME" \
   --set clientUrl=https://auth.example.com \
   --set frontend.gatewayProxyUrl=http://gateway.api-gateway.svc.cluster.local:8080
 ```
@@ -40,6 +40,6 @@ with `uam-auth` upstream `uam-backend.uam.svc.cluster.local:8080`.
 | `secrets.jwtAccessSecret` | Must equal gateway `JWT_SECRET` (ADR-0050) |
 | `auth.omitRefreshInBody` | HttpOnly cookie mode — no refresh in JSON (ADR-0055) |
 | `auth.cookieSecure` | `true` behind TLS |
-| `mongodb.enabled` | In-cluster MongoDB StatefulSet |
+| `mongodb.enabled` | In-cluster External PostgreSQL |
 
 See [ADR-0056](../../../docs/decisions/0056-uam-helm-chart.md).
