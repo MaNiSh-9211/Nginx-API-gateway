@@ -4,7 +4,7 @@
 
 ## Context
 
-UAM (`services/uam/backend`, `services/uam/frontend`, MongoDB) must deploy independently from the
+UAM (`services/uam/backend`, `services/uam/frontend`, PostgreSQL) must deploy independently from the
 API gateway in production — different scale, lifecycle, and blast radius
 (ADR-0052). Docker Compose overlays suffice for dev; Kubernetes needs a chart.
 
