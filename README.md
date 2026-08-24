@@ -1,6 +1,6 @@
 # nginx-rust-api-gateway
 
-A production-grade API gateway built on **OpenResty (NGINX + LuaJIT)** with a **Rust FFI data-plane extension** and a full **User Access Management (UAM)** service. Every significant architectural decision is documented in [`docs/decisions/`](docs/decisions/) (66 ADRs).
+A production-grade API gateway built on **OpenResty (NGINX + LuaJIT)** with a **Rust FFI data-plane extension** and a full **User Access Management (UAM)** service. Every significant architectural decision is documented in [`docs/decisions/`](docs/decisions/) (78 ADRs).
 
 ---
 
@@ -45,7 +45,7 @@ uam-frontend  (React / Vite)                                            │
 Redis  (Upstash / managed)                                              │
   └─ Revocation keys, token-version floor, distributed rate limits      │
                                                                         │
-MongoDB Atlas                                                           │
+PostgreSQL (Aiven)                                                           │
   └─ User accounts, refresh tokens, session tracking                    │
 ```
 
@@ -61,7 +61,17 @@ MongoDB Atlas                                                           │
 | Rate limiting | Shared-memory mmap token bucket | Cross-worker without network; ~15 ns per check |
 | Load balancing | Consistent hash + EWMA + circuit breaker | Sticky routing, latency-aware selection, fault tolerance |
 | Config distribution | Sidecar file-watch (not per-worker polling) | N requests/interval to control plane instead of N×workers |
-| Token revocation | Redis `EXISTS` on `jti` or `sha256(token)` | Per-token precision; no prefix collision; opaque key |
+| Token revocation | Zero-hot-path-Redis snapshot via arc-swap | ~100 ns auth; 5 s propagation bound; fail-closed guard |
+| Sentinel Mode | Cross-signal adaptive defense posture (L0–L4) | Self-calibrating thresholds via median+MAD baselines |
+| Soft circuit breaker | Confidence-scored routing (0–100 per upstream) | Continuous health weighting instead of binary ejection |
+| Active health checks | Per-worker prober thread, cross-worker SHM | Auto-recovery without traffic |
+| Canary splitting | Version labels + % bucketing + sticky header/cookie | Safe rollouts with instant fallback |
+| Timeout tiers | fast/normal/slow nginx internal locations | Per-route timeout budgets without config reload |
+| Request validation | Per-route body policy (size/type/required fields) | Catches client errors at edge before backends |
+| Quota enforcement | Redis INCR + EXPIRE NX per-user daily counter | Fleet-wide exact counting with grace borrowing |
+| Adaptive concurrency | Gradient limiter (TCP Vegas applied to HTTP proxy) | Limit self-discovers backend capacity |
+| Single-flight collapsing | In-flight registry collapses identical GETs | Eliminates thundering herd at the source |
+| Latency debt ledger | SLA violations accumulate as decaying debt | Natural credit market for upstream traffic |
 | Session invalidation | Token-version floor in Redis | O(1) kill-all-sessions on password reset |
 | Observability | Prometheus pull + JSON access logs + OTel tail sampling | Scrape-based liveness, queryable logs, sampled traces |
 
