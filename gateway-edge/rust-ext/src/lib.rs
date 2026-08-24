@@ -22,6 +22,8 @@ mod cache;
 pub mod config;
 pub mod cors;
 pub mod health;
+mod debt;
+mod entropy;
 mod load_balancing;
 mod adaptive_concurrency;
 pub mod otlp;
@@ -151,6 +153,12 @@ pub unsafe extern "C" fn report_telemetry(
 
     if !upstream.is_empty() {
         load_balancing::record_upstream_latency(&upstream, latency_us as u64);
+        // Latency Debt Ledger (ADR-0077): record against tier budget.
+        let budget_us = match tier_budget_us() {
+            Some(b) => b,
+            None => 60_000_000, // normal tier default
+        };
+        debt::record_observation(&upstream, latency_us as u64, budget_us);
         if status >= 500 {
             load_balancing::record_failure_for(&upstream);
         } else {
@@ -161,6 +169,13 @@ pub unsafe extern "C" fn report_telemetry(
     } else {
         load_balancing::record_success();
     }
+}
+
+/// Tier budget in microseconds for latency debt tracking (ADR-0077).
+fn tier_budget_us() -> Option<u64> {
+    std::env::var("DEBT_BUDGET_US")
+        .ok()
+        .and_then(|v| v.parse().ok())
 }
 
 /// Release the concurrency (backpressure) slot held by an admitted request.
