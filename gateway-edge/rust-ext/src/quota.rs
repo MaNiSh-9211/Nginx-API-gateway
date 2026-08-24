@@ -14,7 +14,7 @@
 use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::auth;
 use crate::config::QuotaPolicy;
@@ -64,6 +64,24 @@ pub fn exceeds(counter: u64, limit: u64) -> bool {
 }
 
 /// Increment and check. Fail-open on any Redis problem.
+/// Dedicated connection opener with managed-Redis-friendly timeouts: the
+/// shared auth budget (50 ms) cannot cover a TLS+AUTH handshake to Upstash
+/// (~200-400 ms), which made every quota INCR silently fail open.
+fn open_quota_connection() -> Option<redis::Connection> {
+    let timeout = Duration::from_millis(
+        std::env::var("QUOTA_REDIS_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(|v| v.clamp(100, 10_000))
+            .unwrap_or(2_000),
+    );
+    let client = redis::Client::open(auth::redis_url().as_str()).ok()?;
+    let con = client.get_connection_with_timeout(timeout).ok()?;
+    let _ = con.set_read_timeout(Some(timeout));
+    let _ = con.set_write_timeout(Some(timeout));
+    Some(con)
+}
+
 pub fn check_quota(service: &str, user_id: &str, policy: &QuotaPolicy) -> bool {
     QUOTA_CHECKS_TOTAL.fetch_add(1, Ordering::Relaxed);
     let key = counter_key(service, user_id);
@@ -74,7 +92,7 @@ pub fn check_quota(service: &str, user_id: &str, policy: &QuotaPolicy) -> bool {
         // One bounded retry; a dead conn is dropped and rebuilt next call.
         for _ in 0..2 {
             if guard.is_none() {
-                match auth::open_redis_connection() {
+                match open_quota_connection() {
                     Some(c) => *guard = Some(c),
                     None => return Err(()),
                 }
