@@ -89,6 +89,11 @@ pub struct ServiceConfig {
 #[derive(Debug, Deserialize, Clone)]
 pub struct QuotaPolicy {
     pub daily_limit: u64,
+    /// Grace borrowing (ADR-0073): allow up to this % of the daily limit as
+    /// borrowed requests once the limit is exhausted, instead of hard-429ing.
+    /// 0 = strict cut-off. Borrowed usage is counted in QUOTA_BORROWED_TOTAL.
+    #[serde(default)]
+    pub borrow_percent: u32,
 }
 
 /// Dynamic CORS policy (ADR-0068) — distributed via config hot-reload so

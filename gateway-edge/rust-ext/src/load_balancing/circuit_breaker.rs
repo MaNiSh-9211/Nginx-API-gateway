@@ -160,6 +160,28 @@ pub fn global_state() -> usize {
     get_cb("__GLOBAL__").state_value()
 }
 
+/// ── Soft circuit breaker (ADR-0072) ──────────────────────────────────────────
+/// A 0–100 *confidence score* per upstream, derived from the same SHM counters
+/// the hard breaker uses. The selector uses it as a continuous weight instead
+/// of treating health as binary: a slightly-worn upstream still wins traffic,
+/// just less of it, and recovers proportionally as evidence improves.
+///
+///   OPEN (cooldown)      → 5    effectively benched
+///   HALF_OPEN            → 40   probing, trusted a little
+///   CLOSED w/ failures f → max(30, 100 − f×4)  graceful slide
+///   CLOSED clean         → 100
+pub fn get_confidence(upstream: &str) -> u8 {
+    let cb = get_cb(upstream);
+    match cb.state.load(Ordering::Relaxed) {
+        STATE_OPEN => 5,
+        STATE_HALF_OPEN => 40,
+        _ => {
+            let f = cb.failures.load(Ordering::Relaxed);
+            (100u32.saturating_sub(f as u32 * 4)).clamp(30, 100) as u8
+        }
+    }
+}
+
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

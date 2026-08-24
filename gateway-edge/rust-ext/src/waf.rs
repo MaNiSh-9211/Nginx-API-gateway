@@ -98,10 +98,14 @@ const MAX_BODY_SCAN_LEN:   usize = 8_192;
 
 /// Per-IP RPS for unauthenticated traffic. Override with `WAF_IP_RATE_LIMIT_RPS`.
 fn ip_rate_limit_rps() -> u32 {
-    std::env::var("WAF_IP_RATE_LIMIT_RPS")
+    // Sentinel Mode (ADR-0071): under ELEVATED+ posture the per-IP budget is
+    // tightened so the whole node defends harder without config changes.
+    let sentinel_factor = crate::sentinel::waf_budget_factor();
+    let base: u32 = std::env::var("WAF_IP_RATE_LIMIT_RPS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(100)
+        .unwrap_or(100);
+    ((base as f64) * sentinel_factor).max(1.0) as u32
 }
 
 /// How many times to peel URL-encoding. Stops early when a pass changes nothing.

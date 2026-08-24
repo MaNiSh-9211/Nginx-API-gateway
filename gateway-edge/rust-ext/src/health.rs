@@ -139,6 +139,22 @@ fn registry() -> &'static Mutex<Vec<String>> {
     REGISTRY.get_or_init(|| Mutex::new(Vec::new()))
 }
 
+/// Fraction of registered upstreams currently probed-DOWN (0.0 when none).
+pub fn down_ratio() -> f64 {
+    let reg = registry().lock().ok();
+    let Some(reg) = reg else { return 0.0 };
+    if reg.is_empty() {
+        return 0.0;
+    }
+    let down = reg.iter().filter(|a| !is_healthy(a)).count();
+    down as f64 / reg.len() as f64
+}
+
+/// Prometheus label-value escaping (backslash, quote, newline).
+fn escape_label(v: &str) -> String {
+    v.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n")
+}
+
 /// Prometheus lines for every known upstream: up/down + last probe age.
 pub fn prometheus_fragment() -> String {
     let reg = registry().lock().ok();
@@ -148,7 +164,10 @@ pub fn prometheus_fragment() -> String {
     for addr in reg.iter() {
         let s = slot(addr);
         let up = s.healthy.load(Ordering::Relaxed);
-        out.push_str(&format!("gateway_active_health_up{{upstream=\"{addr}\"}} {up}\n"));
+        out.push_str(&format!(
+            "gateway_active_health_up{{upstream=\"{}\"}} {up}\n",
+            escape_label(addr)
+        ));
     }
     out
 }

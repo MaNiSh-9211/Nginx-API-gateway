@@ -28,6 +28,7 @@ mod rate_limit;
 pub mod redis_cb;
 pub mod revocation;
 mod router;
+pub mod sentinel;
 pub mod telemetry;
 mod validate;
 mod waf;
@@ -83,6 +84,7 @@ pub extern "C" fn init_extension() {
     rate_limit::start_rl_redis_sync();
     revocation::start_sync();
     health::start_active_checks();
+    sentinel::start_sentinel();
     otlp::start();
 }
 
@@ -318,6 +320,19 @@ pub unsafe extern "C" fn process_request(
             return 404;
         }
     };
+
+    // ── 4a. Sentinel Mode: shed anonymous traffic at GUARDED+ (ADR-0071) ──
+    // Infrastructure paths (/health /ready /metrics /healthz) are matched by
+    // their own nginx locations and never reach this hot path.
+    if sentinel::shed_anonymous() && identity.is_none() {
+        eprintln!(
+            "[sentinel] L{} shedding anonymous request {}",
+            sentinel::level(),
+            route_path
+        );
+        backpressure::release();
+        return 503;
+    }
 
     // Timeout-policy tier for nginx's matching internal location (ADR-0062).
     if !tier_out_ptr.is_null() {

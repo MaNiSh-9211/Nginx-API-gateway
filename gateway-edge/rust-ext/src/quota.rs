@@ -21,6 +21,7 @@ use crate::config::QuotaPolicy;
 
 pub static QUOTA_CHECKS_TOTAL: AtomicU64 = AtomicU64::new(0);
 pub static QUOTA_REJECTED_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub static QUOTA_BORROWED_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 thread_local! {
     /// Per-worker persistent connection, dedicated to quota accounting.
@@ -58,9 +59,33 @@ pub fn counter_key(service: &str, user_id: &str) -> String {
     format!("gateway:quota:{}:{}:{}", service, utc_day_key(), user_shard(user_id))
 }
 
+/// Outcome of a quota check against policy (pure, unit-tested).
+#[derive(Debug, PartialEq, Eq)]
+pub enum QuotaDecision {
+    Allow,
+    Borrowed,
+    Rejected,
+}
+
 /// Pure decision: does this count exceed the limit?
 pub fn exceeds(counter: u64, limit: u64) -> bool {
     limit > 0 && counter > limit
+}
+
+/// Decide from counter + policy including grace borrowing (ADR-0073).
+pub fn quota_decision(count: u64, limit: u64, borrow_percent: u32) -> QuotaDecision {
+    if limit == 0 {
+        return QuotaDecision::Allow; // limit=0 disables quota checking
+    }
+    if count <= limit {
+        return QuotaDecision::Allow;
+    }
+    let ceiling = limit + limit * borrow_percent as u64 / 100;
+    if count <= ceiling && borrow_percent > 0 {
+        QuotaDecision::Borrowed
+    } else {
+        QuotaDecision::Rejected
+    }
 }
 
 /// Increment and check. Fail-open on any Redis problem.
@@ -117,11 +142,21 @@ pub fn check_quota(service: &str, user_id: &str, policy: &QuotaPolicy) -> bool {
 
     match result {
         Ok(count) => {
-            if exceeds(count as u64, policy.daily_limit) {
-                QUOTA_REJECTED_TOTAL.fetch_add(1, Ordering::Relaxed);
-                false
-            } else {
-                true
+            let count = count as u64;
+            match quota_decision(count, policy.daily_limit, policy.borrow_percent) {
+                QuotaDecision::Allow => true,
+                QuotaDecision::Borrowed => {
+                    QUOTA_BORROWED_TOTAL.fetch_add(1, Ordering::Relaxed);
+                    eprintln!(
+                        "[quota] {}/{} borrowed request {} (limit {} +{}%)",
+                        service, user_id, count, policy.daily_limit, policy.borrow_percent
+                    );
+                    true
+                }
+                QuotaDecision::Rejected => {
+                    QUOTA_REJECTED_TOTAL.fetch_add(1, Ordering::Relaxed);
+                    false
+                }
             }
         }
         Err(()) => true, // fail-open
@@ -170,6 +205,29 @@ mod tests {
         let s = user_shard("someone");
         assert_eq!(s.len(), 16);
         assert!(s.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn quota_decision_boundaries() {
+        use QuotaDecision::*;
+        // limit 100, borrow 20% -> ceiling 120
+        assert_eq!(quota_decision(100, 100, 20), Allow);
+        assert_eq!(quota_decision(101, 100, 20), Borrowed);
+        assert_eq!(quota_decision(120, 100, 20), Borrowed);
+        assert_eq!(quota_decision(121, 100, 20), Rejected);
+        // borrow off = hard cut at limit
+        assert_eq!(quota_decision(101, 100, 0), Rejected);
+        // limit 0 disables checking entirely
+        assert_eq!(quota_decision(u64::MAX, 0, 50), Allow);
+    }
+
+    #[test]
+    fn borrowed_counter_is_distinct_series() {
+        // Pure decision path only — no global atomics (parallel tests share
+        // process-wide counters, so asserting on them races).
+        assert_eq!(quota_decision(11, 10, 10), QuotaDecision::Borrowed);
+        assert_eq!(quota_decision(15, 10, 10), QuotaDecision::Rejected);
+        assert_eq!(quota_decision(9, 10, 10), QuotaDecision::Allow);
     }
 
     #[test]

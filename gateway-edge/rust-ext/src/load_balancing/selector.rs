@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use crate::config::{ServiceConfig, Upstream};
 use crate::health::is_healthy;
 
-use super::circuit_breaker::is_upstream_open;
+use super::circuit_breaker::{get_confidence, is_upstream_open};
 use super::ema::get_ema;
 use super::ring::{build_weight_ring_positions, fx_hash_index};
 
@@ -130,14 +130,23 @@ fn pick_p2c(
         (true, true) if a != b => {
             let ema_a = get_ema(&pool[a].address);
             let ema_b = get_ema(&pool[b].address);
-            if ema_a < f64::MAX && ema_b < f64::MAX {
-                if ema_b < ema_a * P2C_LATENCY_ADVANTAGE {
-                    Some(b)
-                } else if ema_a < ema_b * P2C_LATENCY_ADVANTAGE {
-                    Some(a)
-                } else {
-                    Some(a) // affinity: prefer primary when latencies comparable
-                }
+            // Composite health score (ADR-0072 soft breaker): latency EMA is
+            // penalized by low confidence, so a slightly-worn upstream still
+            // wins traffic but needs proportionally better latency to do so.
+            let conf_a = 100.0 - get_confidence(&pool[a].address) as f64;
+            let conf_b = 100.0 - get_confidence(&pool[b].address) as f64;
+            let score_a = ema_a * (1.0 + conf_a / 50.0);
+            let score_b = ema_b * (1.0 + conf_b / 50.0);
+            if ema_a >= f64::MAX && ema_b >= f64::MAX {
+                Some(a)
+            } else if score_b < score_a * P2C_LATENCY_ADVANTAGE {
+                Some(b)
+            } else if score_a < score_b * P2C_LATENCY_ADVANTAGE {
+                Some(a)
+            } else if (score_a - score_b).abs() < f64::EPSILON {
+                Some(a) // affinity: prefer primary when scores comparable
+            } else if score_b < score_a {
+                Some(b)
             } else {
                 Some(a)
             }

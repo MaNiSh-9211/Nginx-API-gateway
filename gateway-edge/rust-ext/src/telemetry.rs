@@ -297,6 +297,18 @@ pub fn prometheus_text() -> String {
          gateway_active_health_failures_total {hc_fails}\n"
     ));
 
+    // Sentinel Mode (ADR-0071).
+    let lvl = crate::sentinel::level();
+    out.push_str(&format!(
+        "# HELP gateway_sentinel_level Adaptive defense posture (0 normal, 2 elevated, 3 guarded, 4 lockdown)\n\
+         # TYPE gateway_sentinel_level gauge\n\
+         gateway_sentinel_level {lvl}\n\
+         # HELP gateway_sentinel_transitions_total Posture transitions since boot\n\
+         # TYPE gateway_sentinel_transitions_total counter\n\
+         gateway_sentinel_transitions_total {}\n",
+        crate::sentinel::TRANSITIONS_TOTAL.load(Ordering::Relaxed)
+    ));
+
     // Per-user daily quotas (ADR-0066).
     let q_checks = crate::quota::QUOTA_CHECKS_TOTAL.load(Ordering::Relaxed);
     let q_rej    = crate::quota::QUOTA_REJECTED_TOTAL.load(Ordering::Relaxed);
@@ -306,7 +318,11 @@ pub fn prometheus_text() -> String {
          gateway_quota_checks_total {q_checks}\n\
          # HELP gateway_quota_rejected_total Requests rejected for daily quota\n\
          # TYPE gateway_quota_rejected_total counter\n\
-         gateway_quota_rejected_total {q_rej}\n"
+         gateway_quota_rejected_total {q_rej}\n\
+         # HELP gateway_quota_borrowed_total Requests admitted via grace borrowing (ADR-0073)\n\
+         # TYPE gateway_quota_borrowed_total counter\n\
+         gateway_quota_borrowed_total {}\n",
+        crate::quota::QUOTA_BORROWED_TOTAL.load(Ordering::Relaxed)
     ));
 
     out
