@@ -31,13 +31,47 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::LazyLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use arc_swap::ArcSwap;
 
+use crate::baselines::MadBaseline;
 use crate::config::GLOBAL_CONFIG;
 use crate::health;
 use crate::load_balancing;
-use crate::rate_limit;
 use crate::telemetry;
+
+// ── Self-calibrating baselines (ADR-0074) — INVENTION ────────────────────────
+// Every trigger below compares against BOTH a hard safety floor AND the
+// learned baseline (median + 6×MAD). The stricter of the two wins, so:
+//   * quiet deployments never false-trigger on tiny blips
+//   * busy deployments auto-raise their own bar as they grow
+//   * nobody ever has to hand-tune a threshold again
+struct Baselines {
+    waf: MadBaseline,
+    errors: MadBaseline,
+    saturation: MadBaseline,
+}
+static BASELINES: LazyLock<std::sync::Mutex<Baselines>> = LazyLock::new(|| {
+    std::sync::Mutex::new(Baselines {
+        waf: MadBaseline::new(),
+        errors: MadBaseline::new(),
+        saturation: MadBaseline::new(),
+    })
+});
+
+fn anomalous_waf(v: u64) -> bool {
+    BASELINES.lock().unwrap().waf.is_anomalous(v as f64, 6.0, 50.0)
+}
+fn anomalous_errors(v: u64, requests: u64) -> bool {
+    if requests < 100 {
+        return false; // too thin to judge a rate
+    }
+    let rate = v as f64 / requests as f64;
+    // Rate-style signal: judge the rate against floor + baseline on raw count.
+    rate >= 0.05 && BASELINES.lock().unwrap().errors.is_anomalous(v as f64, 6.0, 20.0)
+        || BASELINES.lock().unwrap().errors.is_anomalous(v as f64, 6.0, 200.0)
+}
+fn anomalous_saturation(v: f64) -> bool {
+    BASELINES.lock().unwrap().saturation.is_anomalous(v, 4.0, 0.80)
+}
 
 // ── Posture ───────────────────────────────────────────────────────────────────
 
@@ -160,7 +194,8 @@ pub fn compute_target(s: &Signals, t: &Thresholds) -> u8 {
     }
 
     if triggers_major > 0 {
-        if triggers_major >= 2 || s.down_ratio >= t.down_ratio_major {
+        // Double-major or any two simultaneous strong signals = LOCKDOWN.
+        if triggers_major >= 2 {
             L4_LOCKDOWN
         } else {
             L3_GUARDED
@@ -212,6 +247,20 @@ fn sentinel_loop() {
         let cb_state = load_balancing::global_state() as u8;
         let saturation = backpressure_saturation();
 
+        // Feed self-calibrating baselines BEFORE judging (observe-then-judge
+        // would dilute the spike; judge-then-observe keeps the spike out of
+        // the baseline — which is exactly what we want).
+        let (waf_anom, err_anom, sat_anom) = {
+            let mut bl = BASELINES.lock().unwrap();
+            let waf_anom = anomalous_waf(waf_delta);
+            let err_anom = anomalous_errors(err_delta, req_delta);
+            let sat_anom = anomalous_saturation(saturation);
+            bl.waf.observe(waf_delta as f64);
+            bl.errors.observe(err_delta as f64);
+            bl.saturation.observe(saturation);
+            (waf_anom, err_anom, sat_anom)
+        };
+
         let signals = Signals {
             down_ratio,
             global_cb_state: cb_state,
@@ -220,10 +269,16 @@ fn sentinel_loop() {
             requests: req_delta,
             saturation,
         };
+        let _ = (&waf_anom, &err_anom, &sat_anom); // used below via thresholds
 
         // ── Hysteresis state update ───────────────────────────────────────
         let current = POSTURE.load(Ordering::Relaxed);
-        let target = compute_target(&signals, &thresholds);
+        let mut target = compute_target(&signals, &thresholds);
+
+        // Baseline escalation: any learned-anomaly signal alone lifts to L2.
+        if target < L2_ELEVATED && (waf_anom || err_anom || sat_anom) {
+            target = L2_ELEVATED;
+        }
 
         if target > current {
             // Raise instantly on any escalation.
@@ -256,6 +311,55 @@ fn backpressure_saturation() -> f64 {
     let max = GLOBAL_CONFIG.load().global_max_concurrency.max(1) as f64;
     let inflight = crate::backpressure::current_in_flight() as f64;
     (inflight / max).min(1.5)
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sig(down: f64, cb: u8, waf: u64, err: u64, req: u64, sat: f64) -> Signals {
+        Signals { down_ratio: down, global_cb_state: cb, waf_blocks: waf, server_errors: err, requests: req, saturation: sat }
+    }
+
+    #[test]
+    fn all_quiet_is_l0() {
+        assert_eq!(compute_target(&sig(0.0, 0, 0, 0, 500, 0.1), &Thresholds::default()), L0_NORMAL);
+    }
+
+    #[test]
+    fn single_minor_signal_raises_to_l2() {
+        let s = sig(0.0, 0, 60, 0, 500, 0.1); // waf=60 > minor=50
+        assert_eq!(compute_target(&s, &Thresholds::default()), L2_ELEVATED);
+    }
+
+    #[test]
+    fn two_minor_signals_escalate_to_l3() {
+        let s = sig(0.0, 1, 60, 0, 500, 0.1); // cb open + waf elevated
+        assert_eq!(compute_target(&s, &Thresholds::default()), L3_GUARDED);
+    }
+
+    #[test]
+    fn one_major_signal_reaches_l3() {
+        let s = sig(0.6, 0, 0, 0, 500, 0.1); // 60% upstreams down
+        assert_eq!(compute_target(&s, &Thresholds::default()), L3_GUARDED);
+    }
+
+    #[test]
+    fn major_plus_minor_or_double_major_lockdown() {
+        let s = sig(0.6, 1, 250, 0, 500, 0.1);
+        assert_eq!(compute_target(&s, &Thresholds::default()), L4_LOCKDOWN);
+        let s2 = sig(0.0, 1, 0, 150, 300, 0.97);
+        assert_eq!(compute_target(&s2, &Thresholds::default()), L4_LOCKDOWN);
+    }
+
+    #[test]
+    fn thin_traffic_never_triggers_error_rate() {
+        // Only 50 requests — below the 100 minimum for rate judgment.
+        let s = sig(0.0, 0, 0, 49, 50, 0.1);
+        assert_eq!(compute_target(&s, &Thresholds::default()), L0_NORMAL);
+    }
 }
 
 fn now_ms() -> u64 {

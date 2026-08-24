@@ -17,6 +17,7 @@
 
 mod auth;
 mod backpressure;
+mod baselines;
 mod cache;
 pub mod config;
 pub mod cors;
