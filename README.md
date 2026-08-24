@@ -280,7 +280,7 @@ nginx-rust-api-gateway/
 
 ```bash
 cp dev/.env.example dev/.env
-# Fill in MONGODB_URI, Redis credentials, JWT_SECRET, etc.
+# Fill in DATABASE_URL, Redis credentials, JWT_SECRET, etc.
 ```
 
 ### 2. Start the full stack

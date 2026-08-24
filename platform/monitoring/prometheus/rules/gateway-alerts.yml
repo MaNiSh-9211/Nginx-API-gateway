@@ -2,8 +2,8 @@
 # Gateway alert rules — metrics contract as of v1.1.x
 #
 # Metric names verified against gateway-edge /metrics:
-#   gateway_http_requests_total      counter (edge, SHM aggregate)
-#   gateway_http_requests_5xx_total  counter
+#   gateway_requests_total      counter (edge, SHM aggregate)
+#   gateway_requests_5xx_total  counter
 #   gateway_latency_us_bucket        histogram
 #   gateway_active_health_up         gauge   {upstream=...}   (ADR-0061)
 #   gateway_auth_snapshot_age_seconds gauge  (ADR-0054)
@@ -19,8 +19,8 @@ groups:
 
       - alert: GatewayHighErrorRate
         expr: |
-          sum(rate(gateway_http_requests_5xx_total[5m]))
-            / clamp_min(sum(rate(gateway_http_requests_total[5m])), 1e-9) > 0.05
+          sum(rate(gateway_requests_5xx_total[5m]))
+            / clamp_min(sum(rate(gateway_requests_total[5m])), 1e-9) > 0.05
         for: 5m
         labels:
           severity: critical
@@ -61,13 +61,13 @@ groups:
       - alert: GatewaySLOBurnRatePage
         expr: |
           (
-            sum(rate(gateway_http_requests_5xx_total[1h]))
-              / clamp_min(sum(rate(gateway_http_requests_total[1h])), 1e-9)
+            sum(rate(gateway_requests_5xx_total[1h]))
+              / clamp_min(sum(rate(gateway_requests_total[1h])), 1e-9)
           ) > (14.4 * 0.001)
           and
           (
-            sum(rate(gateway_http_requests_5xx_total[5m]))
-              / clamp_min(sum(rate(gateway_http_requests_total[5m])), 1e-9)
+            sum(rate(gateway_requests_5xx_total[5m]))
+              / clamp_min(sum(rate(gateway_requests_total[5m])), 1e-9)
           ) > (14.4 * 0.001)
         for: 2m
         labels:
@@ -81,13 +81,13 @@ groups:
       - alert: GatewaySLOBurnRateTicket
         expr: |
           (
-            sum(rate(gateway_http_requests_5xx_total[6h]))
-              / clamp_min(sum(rate(gateway_http_requests_total[6h])), 1e-9)
+            sum(rate(gateway_requests_5xx_total[6h]))
+              / clamp_min(sum(rate(gateway_requests_total[6h])), 1e-9)
           ) > (6 * 0.001)
           and
           (
-            sum(rate(gateway_http_requests_5xx_total[30m]))
-              / clamp_min(sum(rate(gateway_http_requests_total[30m])), 1e-9)
+            sum(rate(gateway_requests_5xx_total[30m]))
+              / clamp_min(sum(rate(gateway_requests_total[30m])), 1e-9)
           ) > (6 * 0.001)
         for: 15m
         labels:
