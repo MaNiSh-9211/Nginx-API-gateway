@@ -27,7 +27,6 @@ when you run the stack from [`dev/docker-compose.yml`](../dev/docker-compose.yml
 | `config-sidecar` | gateway-sidecar | `:9092` |
 | `redis` | redis-exporter | `:9121/metrics` |
 | `uam-backend` | uam-backend (UAM overlay) | `:8080/metrics` |
-| `mongodb` | mongodb-exporter (UAM overlay) | `:9216/metrics` |
 | `uam-frontend-nginx` | nginx-exporter (UAM overlay) | `:9113/metrics` |
 
 Grafana dashboards (auto-provisioned): **API Gateway — Hot Path**, **Platform — Stack Overview**, **UAM — Auth Service**.

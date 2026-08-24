@@ -157,7 +157,6 @@ Included in the base stack. With the UAM overlay, Prometheus switches to `promet
 | `config-sidecar` | gateway-sidecar | Poll/update/error counters (`:9092`) |
 | `redis` | redis-exporter | Memory, connections, commands |
 | `uam-backend` | uam-backend (UAM overlay) | HTTP request rate, latency, process stats |
-| `mongodb` | mongodb-exporter (UAM overlay) | Connections, opcounters |
 | `uam-frontend-nginx` | nginx-exporter (UAM overlay) | nginx stub_status |
 
 **Grafana dashboards** (auto-provisioned at http://localhost:3000):
