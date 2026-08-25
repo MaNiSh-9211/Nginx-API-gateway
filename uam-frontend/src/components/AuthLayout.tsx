@@ -1,5 +1,4 @@
 import React from 'react';
-import { ShieldIcon } from './Icons';
 import { AnimatedBackground } from './AnimatedBackground';
 
 interface AuthLayoutProps {
@@ -34,7 +33,7 @@ export const AuthHeader: React.FC<AuthHeaderProps> = ({ title, subtitle }) => (
     <div className="auth-header">
         <div className="auth-logo">
             <div className="auth-logo-glow"></div>
-            <ShieldIcon />
+            <img src="/logo.png" alt="Routiq logo" />
         </div>
         <h1 className="auth-title">{title}</h1>
         {subtitle && <p className="auth-subtitle">{subtitle}</p>}

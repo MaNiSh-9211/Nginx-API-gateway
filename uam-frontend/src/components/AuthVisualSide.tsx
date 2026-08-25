@@ -1,5 +1,4 @@
 import React from 'react';
-import { ShieldIcon } from './Icons';
 
 interface AuthVisualSideProps {
     title: string;
@@ -16,7 +15,7 @@ export const AuthVisualSide: React.FC<AuthVisualSideProps> = ({
         <div className="auth-visual-content">
             <div className="auth-visual-logo">
                 <div className="auth-visual-logo-glow"></div>
-                <ShieldIcon />
+                <img src="/logo.png" alt="Routiq logo" />
             </div>
             <h2 className="auth-visual-title">{title}</h2>
             <p className="auth-visual-description">{description}</p>

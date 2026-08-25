@@ -595,10 +595,11 @@ p {
   animation: pulse-glow 3s ease-in-out infinite;
 }
 
-.auth-visual-logo svg {
-  width: 40px;
-  height: 40px;
-  color: white;
+.auth-visual-logo svg,
+.auth-visual-logo img {
+  width: 56px;
+  height: 56px;
+  object-fit: contain;
   position: relative;
   z-index: 1;
 }
@@ -767,10 +768,11 @@ p {
   animation: pulse-glow 2s ease-in-out infinite;
 }
 
-.auth-logo svg {
-  width: 32px;
-  height: 32px;
-  color: white;
+.auth-logo svg,
+.auth-logo img {
+  width: 40px;
+  height: 40px;
+  object-fit: contain;
   position: relative;
   z-index: 1;
 }
@@ -1176,9 +1178,10 @@ p {
     height: 56px;
   }
 
-  .auth-logo svg {
-    width: 28px;
-    height: 28px;
+  .auth-logo svg,
+  .auth-logo img {
+    width: 32px;
+    height: 32px;
   }
 }
 

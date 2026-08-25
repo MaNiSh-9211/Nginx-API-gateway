@@ -35,12 +35,21 @@ a:hover { text-decoration: underline; }
 }
 
 .logo {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
   font-weight: 700;
   font-size: 1.25rem;
   color: var(--text);
   text-decoration: none;
 }
 .logo span { color: var(--accent); }
+.logo-img {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  object-fit: contain;
+}
 
 .user-nav { display: flex; align-items: center; gap: 1rem; }
 
