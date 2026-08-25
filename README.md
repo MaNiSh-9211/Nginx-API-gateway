@@ -1,6 +1,12 @@
-# nginx-rust-api-gateway
+<div align="center">
+
+<img src="assets/logo.png" alt="Routiq logo" width="220"/>
+
+# Routiq
 
 A production-grade API gateway built on **OpenResty (NGINX + LuaJIT)** with a **Rust FFI data-plane extension** and a full **User Access Management (UAM)** service. Every significant architectural decision is documented in [`docs/decisions/`](docs/decisions/) (78 ADRs).
+
+</div>
 
 ---
 
@@ -251,7 +257,7 @@ This design is documented in [ADR-0013](docs/decisions/0013-secrets-via-environm
 ## Repository layout
 
 ```
-nginx-rust-api-gateway/
+routiq/
 ├── gateway-edge/           # NGINX + Rust FFI data plane
 │   ├── rust-ext/           # Rust cdylib (auth, WAF, routing, RL, LB)
 │   ├── lua/                # Lua FFI bridge

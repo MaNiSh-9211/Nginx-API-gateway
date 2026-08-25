@@ -24,7 +24,7 @@ function Step($name, [scriptblock]$action) {
     }
 }
 
-Write-Host "Release gate - nginx-rust-api-gateway" -ForegroundColor Yellow
+Write-Host "Release gate - routiq" -ForegroundColor Yellow
 
 Step "gateway-edge rust-ext unit tests" { Push-Location (Join-Path $Root "gateway-edge/rust-ext"); cargo test --release -q; Pop-Location }
 Step "gateway-control-plane unit tests" { Push-Location (Join-Path $Root "gateway-control-plane"); cargo test --release -q; Pop-Location }

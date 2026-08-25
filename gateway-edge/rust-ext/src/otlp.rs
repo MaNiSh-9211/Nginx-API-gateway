@@ -27,7 +27,7 @@ use crate::telemetry;
 
 const SCOPE: &str = "gateway-edge";
 const SERVICE_NAME: &str = "gateway-edge";
-const SERVICE_NAMESPACE: &str = "nginx-rust-api-gateway";
+const SERVICE_NAMESPACE: &str = "routiq";
 
 struct SpanEvent {
     status:     i32,

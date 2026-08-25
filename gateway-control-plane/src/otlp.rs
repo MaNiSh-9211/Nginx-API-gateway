@@ -97,7 +97,7 @@ impl Drop for Telemetry {
 pub fn init() -> Telemetry {
 let resource = Resource::builder_empty()
         .with_attribute(KeyValue::new("service.name", service_name()))
-        .with_attribute(KeyValue::new("service.namespace", "nginx-rust-api-gateway"))
+        .with_attribute(KeyValue::new("service.namespace", "routiq"))
         .build();
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));

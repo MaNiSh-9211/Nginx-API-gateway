@@ -25,7 +25,7 @@ step() {
   fi
 }
 
-echo "Release gate - nginx-rust-api-gateway"
+echo "Release gate - routiq"
 
 step "gateway-edge rust-ext unit tests" bash -c 'cd gateway-edge/rust-ext && cargo test --release -q'
 step "gateway-control-plane unit tests" bash -c 'cd gateway-control-plane && cargo test --release -q'
