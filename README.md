@@ -259,19 +259,21 @@ This design is documented in [ADR-0013](docs/decisions/0013-secrets-via-environm
 ```
 routiq/
 ├── gateway-edge/           # NGINX + Rust FFI data plane
-│   ├── rust-ext/           # Rust cdylib (auth, WAF, routing, RL, LB)
-│   ├── lua/                # Lua FFI bridge
-│   ├── nginx.conf          # TLS, epoll, access log format
+│   ├── rust-ext/           #     Rust cdylib (auth, WAF, routing, RL, LB)
+│   ├── lua/                #     Lua FFI bridge
+│   ├── nginx.conf          #     TLS, epoll, access log format
 │   └── gateway-locations.conf
-├── gateway-sidecar/        # Config fetcher (Rust)
-├── gateway-control-plane/  # Config + revoke API (Rust / Actix)
+├── gateway-sidecar/        # Config fetcher daemon (Rust)
+├── gateway-control-plane/  # Config + revoke API (Rust / Actix-web)
 ├── uam-backend/            # Auth service (Node.js / TypeScript)
-├── uam-frontend/           # Login UI (React / Vite)
+├── uam-frontend/           # UAM console UI (React / Vite)
 ├── demo-backend/           # Sample upstream for local testing
 ├── demo-frontend/          # Test console for local testing
-├── dev/                    # Docker Compose + E2E test scripts
+├── dev/                    # Docker Compose stacks + E2E test scripts
 ├── platform/               # Helm charts, Prometheus, Grafana, OTel
-└── docs/                   # Architecture docs + 66 ADRs
+├── scripts/                # Repo-level setup & publish scripts
+├── docs/                   # Architecture guides + 78 ADRs
+└── assets/                 # Logos and static assets
 ```
 
 ---
@@ -368,7 +370,7 @@ Helm charts are in [`platform/deploy/helm/`](platform/deploy/helm/).
 |-------|------|
 | Full architecture | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
 | Request lifecycle (7 stages) | [`docs/REQUEST_LIFECYCLE.md`](docs/REQUEST_LIFECYCLE.md) |
-| All 66 ADRs | [`docs/decisions/README.md`](docs/decisions/README.md) |
+| All 78 ADRs | [`docs/decisions/README.md`](docs/decisions/README.md) |
 | Production checklist | [`docs/PRODUCTION_READY.md`](docs/PRODUCTION_READY.md) |
 | Security | [`docs/SECURITY.md`](docs/SECURITY.md) |
 | Performance | [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) |
