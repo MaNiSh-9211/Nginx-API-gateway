@@ -99,3 +99,8 @@ dev/mongodb-uris.local.txt
 env.txt
 docker_*.txt
 **/Dockerfile.patch
+
+# --- security: local env & deps ---
+.env
+.env.*
+!*.env.example
