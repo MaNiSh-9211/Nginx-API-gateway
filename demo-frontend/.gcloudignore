@@ -1,0 +1,9 @@
+# Exclude git, node_modules, and build/output artifacts from Cloud Run build context
+.git
+.github
+node_modules
+package-lock.json
+pnpm-lock.yaml
+*.md
+dist
+build

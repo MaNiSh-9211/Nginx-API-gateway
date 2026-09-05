@@ -1,0 +1,8 @@
+# Exclude git, node_modules, documentation, and dev scripts from Cloud Run build context
+.git
+.github
+node_modules
+*.md
+scripts
+*.test.*
+*.spec.*

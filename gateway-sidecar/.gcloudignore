@@ -1,0 +1,6 @@
+# Exclude git, documentation, and dev scripts from Cloud Run build context
+.git
+.github
+*.md
+scripts
+*.md

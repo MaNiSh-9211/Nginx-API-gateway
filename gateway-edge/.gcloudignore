@@ -1,0 +1,11 @@
+# Exclude git, documentation, and development tooling from Cloud Run build context
+.git
+.github
+*.md
+.docker-compose*
+scripts/*.ps1
+scripts/*.sh
+Dockerfile.override
+rust-ext/target
+lua
+config-sidecar
